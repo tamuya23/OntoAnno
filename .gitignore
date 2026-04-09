@@ -1,0 +1,13 @@
+runs/
+work/
+backups/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.Rhistory
+.RData
+.Rproj.user/
+.ipynb_checkpoints/
+.venv/
+venv/
