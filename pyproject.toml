@@ -9,6 +9,9 @@ description = "CLI orchestration layer for GPTAnno and PDF2markers"
 requires-python = ">=3.11"
 dependencies = ["PyYAML", "Jinja2", "Pillow"]
 
+[project.optional-dependencies]
+ui = ["streamlit>=1.40"]
+
 [project.scripts]
 annoagent = "annoagent.cli:main"
 

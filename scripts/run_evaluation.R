@@ -14,6 +14,9 @@ if (!requireNamespace("pkgload", quietly = TRUE)) {
 if (!requireNamespace("ontologyIndex", quietly = TRUE)) {
   stop("Package 'ontologyIndex' is required.")
 }
+if (!requireNamespace("magrittr", quietly = TRUE)) {
+  stop("Package 'magrittr' is required.")
+}
 if (!requireNamespace("Seurat", quietly = TRUE)) {
   stop("Package 'Seurat' is required.")
 }

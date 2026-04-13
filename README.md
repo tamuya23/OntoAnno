@@ -26,6 +26,12 @@ python3 annoagent run --config configs/agingv2.yaml
 python3 annoagent report --config configs/agingv2.yaml
 python3 annoagent pdfmarkers --config configs/agingv2.yaml --pdf path/to/paper.pdf
 python3 annoagent agent --config configs/agingv2.yaml
+python3 annoagent ask --config configs/agingv2.yaml --message "labels are too coarse, make them more specific"
+python3 annoagent chat --config configs/agingv2.yaml
+python3 annoagent ui --config configs/agingv2.yaml
+python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool select_parent_resolution
+python3 annoagent workers --config configs/agingv2.yaml
+python3 annoagent worker-run --config configs/agingv2.yaml --worker build_review_packets
 ```
 
 `annoagent run` uses `Rscript` from `PATH` by default. If R is installed elsewhere, set `ANNOAGENT_RSCRIPT=/path/to/Rscript`.
@@ -47,6 +53,166 @@ export OPENAI_BASE_URL=...   # optional
 The default report output is:
 
 - `runs/<run_id>/report.html`
+
+## Natural-Language Requests
+
+`ask` is an LLM-driven controller entry. It reads the current AnnoAgent state,
+lets the model choose a tool call, and then executes that tool to
+update config or agent memory. It also keeps a small per-project conversation
+session so follow-up requests can refer to earlier turns.
+
+`chat` uses the same LLM router and session store, but keeps you inside a
+persistent CLI conversation. Tool calls execute immediately.
+
+```bash
+python3 annoagent chat --config configs/agingv2.yaml
+```
+
+## Streamlit Workbench
+
+AnnoAgent also includes a lightweight local Streamlit workbench. It uses the
+same Python/R backend as the CLI:
+
+- Python runs the router, controller, memory, and worker dispatch
+- R workers are still executed locally through `Rscript`
+
+Start it with:
+
+```bash
+python3 annoagent ui --config configs/agingv2.yaml
+```
+
+Useful flags:
+
+```bash
+python3 annoagent ui --config configs/agingv2.yaml --reset-session
+python3 annoagent ui --config configs/agingv2.yaml --server-port 8502
+```
+
+If Streamlit is missing in your current Python environment, install the optional
+UI dependency set:
+
+```bash
+pip install -e .[ui]
+```
+
+Example:
+
+```bash
+python3 annoagent ask --config configs/agingv2.yaml --message "the labels are too coarse, make them more specific"
+```
+
+Reset the per-project session if you want to start a fresh conversation:
+
+```bash
+python3 annoagent ask --config configs/agingv2.yaml --reset-session --message "start over"
+```
+
+Apply the parsed action:
+
+```bash
+python3 annoagent ask --config configs/agingv2.yaml --message "I have new marker genes for pericyte: RGS5, CSPG4, MCAM"
+```
+
+Current supported intent families:
+
+- `run_parent_pipeline`: rerun the full parent backbone
+- `run_RAG_check`: rerun the current RAG-based check/review flow on available annotations
+- `run_subcluster_pipeline`: run a targeted subcluster analysis for one parent cell type
+- `change_annotation_preference`: change granularity, force an existing resolution, or add a new resolution and rerun the parent backbone
+- `add_external_evidence`: add user-provided external evidence by updating an existing cell type with markers or defining a new custom cell type
+- `extract_external_evidence`: registered placeholder intent for future paper/database evidence extraction
+
+The authoritative registry for top-level intents, controller actions, and
+worker chains is stored at:
+
+- `resources/agent_registry.yaml`
+
+You can print the current worker contract inventory directly from the CLI:
+
+```bash
+python3 annoagent workers --config configs/agingv2.yaml
+```
+
+You can also run one deployed worker directly through the normalized worker runtime:
+
+```bash
+python3 annoagent worker-run --config configs/agingv2.yaml --worker build_review_packets
+python3 annoagent worker-run --config configs/agingv2.yaml --worker decide_rag_check --phase initial
+python3 annoagent worker-run --config configs/agingv2.yaml --worker build_candidate_map
+```
+
+An explicit LangGraph-style architecture definition is stored at:
+
+- `src/annoagent/agent_graph.py`
+- `src/annoagent/agent_graph_visual.py`
+
+The repository root also includes:
+
+- `langgraph.json`
+
+These files do not replace the runtime controller. They exist so the current
+Router / Controller / Worker architecture is explicitly modeled in Python for
+graph visualization tooling.
+
+- `agent_graph.py` is registry-driven and easier to keep in sync with the architecture registry.
+- `agent_graph_visual.py` is an explicit, visualization-oriented graph definition for tools that prefer literal node/edge declarations.
+
+The `langgraph.json` file currently points visualization tools at the
+module-level `graph` object exported by `src/annoagent/agent_graph_visual.py`.
+
+Current conceptual workers inside `run_RAG_check` are:
+
+- `build_review_packets`
+- `decide_rag_check`
+- `build_candidate_map`
+- `retrieve_rag_evidence`
+- `run_llm_compare`
+- `human_review`
+
+Persistent agent memory is stored at:
+
+- `work/<project>/agent_memory.json`
+
+Conversation/session state is stored at:
+
+- `work/<project>/agent_session.json`
+
+User-provided marker memory is later injected into `llm-compare` as additional
+researcher-curated supportive evidence.
+
+## GPTAnno Backbone Tools
+
+The original vendored GPTAnno backbone is now exposed as decomposed worker
+tools without changing the existing top-level `run` stages. These tools are
+useful for debugging, future agent control, and strict chain-of-custody around
+which part of the backbone is being rerun.
+
+```bash
+python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool preprocess_parent
+python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool cluster_parent_markers
+python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool annotate_parent_raw
+python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool map_parent_ontology
+python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool select_parent_resolution
+python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool assign_parent_labels
+```
+
+Available parent/subcluster backbone tools:
+
+- `preprocess_parent`
+- `cluster_parent_markers`
+- `annotate_parent_raw`
+- `map_parent_ontology`
+- `select_parent_resolution`
+- `assign_parent_labels`
+- `subcluster_find_markers`
+- `subcluster_annotate_ontology`
+- `subcluster_annotate_inheritance`
+- `finalize_subcluster_annotations`
+
+These write their own JSON outputs under:
+
+- `runs/<run_id>/specs/gptanno-tool-*.outputs.json`
 
 ## Policy
 

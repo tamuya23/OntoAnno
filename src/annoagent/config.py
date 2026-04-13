@@ -4,6 +4,7 @@ import copy
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,10 @@ _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 ANNOTATION_STAGES = {"annotate_parent", "annotate_subclusters"}
 EVALUATION_STAGES = {"evaluate_optional"}
 PDF_STAGES = {"pdfmarkers"}
+DEFAULT_RSCRIPT_CANDIDATES = [
+    "/nas/longleaf/rhel9/apps/r/4.4.0/bin/Rscript",
+    "/usr/bin/Rscript",
+]
 
 
 def _resolve_env_placeholders(value: Any) -> Any:
@@ -52,13 +57,37 @@ def _require(config: dict[str, Any], dotted_key: str) -> Any:
     return current
 
 
+def _resolve_rscript() -> str:
+    explicit = os.getenv("ANNOAGENT_RSCRIPT")
+    if explicit:
+        return explicit
+    discovered = shutil.which("Rscript")
+    if discovered:
+        return discovered
+    for candidate in DEFAULT_RSCRIPT_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return "Rscript"
+
+
 def load_config(config_path: str | Path, repo_root: Path) -> dict[str, Any]:
     path = Path(config_path).expanduser().resolve()
     if not path.exists():
         raise ConfigError(f"Config not found: {path}")
 
-    with path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
+    last_error: Exception | None = None
+    raw: Any = None
+    for _ in range(5):
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                raw = yaml.safe_load(handle) or {}
+            last_error = None
+            break
+        except (yaml.YAMLError, RecursionError) as exc:
+            last_error = exc
+            time.sleep(0.05)
+    if last_error is not None:
+        raise ConfigError(f"Failed to parse config {path}: {last_error}") from last_error
     if not isinstance(raw, dict):
         raise ConfigError("Top-level config must be a mapping")
 
@@ -90,10 +119,11 @@ def load_config(config_path: str | Path, repo_root: Path) -> dict[str, Any]:
         "gptanno_path": str((repo_root / "GPTAnno").resolve()),
         "pdf2markers_path": str((repo_root / "GPTAnno" / "PDF2markers").resolve()),
         "annotation_runner": str((repo_root / "scripts" / "run_annotation.R").resolve()),
+        "gptanno_tool_runner": str((repo_root / "scripts" / "run_gptanno_tool.R").resolve()),
         "evaluation_runner": str((repo_root / "scripts" / "run_evaluation.R").resolve()),
         "review_packet_runner": str((repo_root / "scripts" / "export_parent_review_packets.R").resolve()),
         "ontology_obo": _resolve_path(os.getenv("ANNOAGENT_CL_OBO"), base_dir=base_dir),
-        "rscript": os.getenv("ANNOAGENT_RSCRIPT", "Rscript"),
+        "rscript": _resolve_rscript(),
         "python": shutil.which("python3") or shutil.which("python") or "python3",
     }
     return config
@@ -197,10 +227,13 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
         errors.append(f"PDF2markers directory not found: {pdf2markers_path}")
 
     annotation_runner = Path(config["_runtime"]["annotation_runner"])
+    gptanno_tool_runner = Path(config["_runtime"]["gptanno_tool_runner"])
     evaluation_runner = Path(config["_runtime"]["evaluation_runner"])
     review_packet_runner = Path(config["_runtime"]["review_packet_runner"])
     if not annotation_runner.exists():
         errors.append(f"Annotation runner not found: {annotation_runner}")
+    if not gptanno_tool_runner.exists():
+        errors.append(f"GPTAnno tool runner not found: {gptanno_tool_runner}")
     if not evaluation_runner.exists():
         errors.append(f"Evaluation runner not found: {evaluation_runner}")
     if not review_packet_runner.exists():

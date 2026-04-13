@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 
+from .agent_router import route_agent_request
+from .chat_cli import run_chat_session
 from .config import load_config
 from .interactive_cli import run_interactive_review
 from .orchestrator import Orchestrator, format_validation_result
-from .utils import STAGES
+from .utils import GPTANNO_TOOLS, STAGES
+from .worker_contracts import format_worker_contracts
+from .worker_runtime import AVAILABLE_WORKERS, run_named_worker
 
 
 def _repo_root() -> Path:
@@ -77,6 +83,14 @@ def build_parser() -> argparse.ArgumentParser:
     controller.add_argument("--force", action="store_true")
     controller.add_argument("--phase", choices=["auto", "initial", "post_ontology", "post_compare"], default="auto")
 
+    gptanno_tool = subparsers.add_parser(
+        "gptanno-tool",
+        help="Run one decomposed GPTAnno worker from the parent/subcluster backbone",
+    )
+    gptanno_tool.add_argument("--config", required=True)
+    gptanno_tool.add_argument("--tool", required=True, choices=GPTANNO_TOOLS)
+    gptanno_tool.add_argument("--force", action="store_true")
+
     agent = subparsers.add_parser(
         "agent",
         aliases=["interactive"],
@@ -84,6 +98,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent.add_argument("--config", required=True)
     agent.add_argument("--force", action="store_true")
+
+    ask = subparsers.add_parser(
+        "ask",
+        help="Parse and execute one natural-language agent request",
+    )
+    ask.add_argument("--config", required=True)
+    ask.add_argument("--message")
+    ask.add_argument("--reset-session", action="store_true")
+
+    chat = subparsers.add_parser(
+        "chat",
+        help="Start a persistent natural-language chat session with the agent",
+    )
+    chat.add_argument("--config", required=True)
+    chat.add_argument("--reset-session", action="store_true")
+
+    ui = subparsers.add_parser(
+        "ui",
+        help="Start the local Streamlit workbench for AnnoAgent",
+    )
+    ui.add_argument("--config", required=True)
+    ui.add_argument("--reset-session", action="store_true")
+    ui.add_argument("--server-port", type=int, default=8501)
+    ui.add_argument("--server-address", default="127.0.0.1")
+
+    workers = subparsers.add_parser(
+        "workers",
+        help="Show the current worker contract inventory and deployment status",
+    )
+    workers.add_argument("--config", required=True)
+
+    worker_run = subparsers.add_parser(
+        "worker-run",
+        help="Run one deployed worker through the normalized AnnoAgent worker runtime",
+    )
+    worker_run.add_argument("--config", required=True)
+    worker_run.add_argument("--worker", required=True, choices=AVAILABLE_WORKERS)
+    worker_run.add_argument("--force", action="store_true")
+    worker_run.add_argument("--phase", choices=["auto", "initial", "post_ontology", "post_compare"], default="auto")
 
     return parser
 
@@ -151,6 +204,115 @@ def main(argv: list[str] | None = None) -> int:
         outputs = orchestrator.generate_controller(force=args.force, phase=args.phase)
         orchestrator.run(from_stage="report", to_stage="report", force=True)
         print(f"Controller state generated in {outputs['output_dir']}")
+        return 0
+
+    if args.command == "gptanno-tool":
+        outputs = orchestrator.generate_gptanno_tool(args.tool, force=args.force)
+        print(f"GPTAnno tool '{args.tool}' completed.")
+        if outputs.get("log"):
+            print(f"Log: {outputs['log']}")
+        print(outputs)
+        return 0
+
+    if args.command == "ask":
+        message = args.message or input("AnnoAgent request> ").strip()
+        result = route_agent_request(
+            config=config,
+            orchestrator=orchestrator,
+            user_message=message,
+            apply=True,
+            reset_session=args.reset_session,
+        )
+        if result.get("tool_calls"):
+            for item in result["tool_calls"]:
+                print(f"Executed tool: {item['tool_name']}")
+                print(f"Arguments: {item['arguments']}")
+                tool_result = item.get("result") or {}
+                if tool_result.get("message"):
+                    print(f"Result: {tool_result['message']}")
+                if tool_result.get("updated_config"):
+                    print(f"Updated config: {tool_result['updated_config']}")
+                if tool_result.get("updated_memory"):
+                    print(f"Updated memory: {tool_result['updated_memory']}")
+                if tool_result.get("executed_workers"):
+                    print("Executed workers:")
+                    for worker in tool_result["executed_workers"]:
+                        label = worker.get("label") or worker.get("worker") or worker.get("tool")
+                        print(f"  - {label}")
+                if tool_result.get("next_step"):
+                    print(f"Suggested next step: {tool_result['next_step']}")
+                print("")
+        if result.get("suggested_next_tools"):
+            print("Suggested next actions:")
+            for item in result["suggested_next_tools"]:
+                print(f"  - {item['tool_name']}: {item['arguments']}")
+            print("")
+        if result.get("session_path"):
+            print(f"Session: {result['session_path']}")
+        if result.get("assistant_message"):
+            print(result["assistant_message"])
+        elif not result.get("tool_calls"):
+            print("No tool call proposed.")
+        return 0
+
+    if args.command == "chat":
+        return run_chat_session(
+            orchestrator=orchestrator,
+            reset_session=args.reset_session,
+        )
+
+    if args.command == "ui":
+        env = os.environ.copy()
+        env["ANNOAGENT_STREAMLIT_CONFIG"] = config["_meta"]["config_path"]
+        env["ANNOAGENT_STREAMLIT_RESET_SESSION"] = "1" if args.reset_session else "0"
+        matplotlib_cache = repo_root / ".cache" / "matplotlib"
+        matplotlib_cache.mkdir(parents=True, exist_ok=True)
+        env.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
+        env.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
+        app_path = repo_root / "src" / "annoagent" / "streamlit_app.py"
+        command = [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(app_path),
+            "--server.address",
+            str(args.server_address),
+            "--server.port",
+            str(args.server_port),
+        ]
+        try:
+            return subprocess.run(command, env=env, check=False).returncode
+        except FileNotFoundError:
+            print(
+                "Streamlit is not installed in the current Python environment. "
+                "Install it first, for example: `pip install -e .[ui]`",
+                file=sys.stderr,
+            )
+            return 1
+
+    if args.command == "workers":
+        print(format_worker_contracts(repo_root))
+        return 0
+
+    if args.command == "worker-run":
+        result = run_named_worker(
+            orchestrator,
+            args.worker,
+            force=args.force,
+            phase=args.phase,
+        )
+        print(f"Worker: {result.get('worker')}")
+        print(f"Status: {result.get('status')}")
+        print(f"Implementation: {result.get('implementation')}")
+        if result.get("notes"):
+            print("Notes:")
+            for note in result["notes"]:
+                print(f"  - {note}")
+        if result.get("artifacts"):
+            print("Artifacts:")
+            for key, value in result["artifacts"].items():
+                print(f"  - {key}: {value}")
         return 0
 
     if args.command in {"agent", "interactive"}:

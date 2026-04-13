@@ -30,21 +30,15 @@ gptcelltype(
 
 \item{parent_celltype}{Optional character. Predict child cell type of this parent.}
 
-\item{llm_config}{Optional list. LLM configuration with: provider ("openai", "anthropic", or "gemini"),
-model, temperature, max_tokens, api_key, system_prompt. Overrides model parameter.
-Examples:
-\itemize{
-\item OpenAI: list(provider = "openai", model = "gpt-5", temperature = 0.7)
-\item Anthropic: list(provider = "anthropic", model = "claude-sonnet-4-20250514", temperature = 0.5)
-\item Gemini: list(provider = "gemini", model = "gemini-2.0-flash", temperature = 0.3)
-}}
+\item{llm_config}{Optional list. LLM configuration with provider, model, params, api_key,
+system_prompt, and provider-specific fields. Overrides \code{model} when supplied.}
 }
 \value{
 A named character vector of predicted cell types for each cluster.
 }
 \description{
 Calls an LLM to predict cell types for each cluster or subcluster using marker genes.
-Supports multiple providers (OpenAI, Anthropic) via the ellmer package.
+Supports multiple providers (OpenAI, Anthropic, Gemini, Ollama, and vLLM) via the ellmer package.
 For each cluster, marker genes are first ranked by avg_log2FC, and the top genes are selected.
 The prompt can optionally include a request for Cell Ontology prediction, restriction to a set of cell types,
 and/or an explicit instruction to predict a child cell type of a parent.

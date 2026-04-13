@@ -1,0 +1,574 @@
+version: 1
+
+architecture:
+  router_role: "Interpret user natural language into one high-level intent."
+  controller_role: "Translate a high-level intent into a deterministic action or worker chain."
+  worker_role: "Execute one concrete step without making high-level routing decisions."
+
+top_level_intents:
+  run_parent_pipeline:
+    user_facing: true
+    description: "Run the full parent backbone from preprocessing through assigned parent labels."
+    controller_action: "run_parent_pipeline"
+    parameters:
+      reason:
+        type: string
+        required: true
+    current_execution:
+      mode: worker_chain
+      workers:
+        - preprocess_parent
+        - cluster_parent_markers
+        - annotate_parent_raw
+        - map_parent_ontology
+        - select_parent_resolution
+        - assign_parent_labels
+    outputs:
+      - "updated parent backbone artifacts under work/<project>/annotate_parent"
+      - "worker outputs under runs/<run_id>/specs/gptanno-tool-*.outputs.json"
+    status: "connected"
+
+  run_RAG_check:
+    user_facing: true
+    description: "Run the current RAG-based check and review pipeline on available annotations."
+    controller_action: "run_RAG_check"
+    parameters:
+      reason:
+        type: string
+        required: true
+    current_execution:
+      mode: refinement_chain
+      logical_workers:
+        - build_review_packets
+        - decide_rag_check
+        - build_candidate_map
+        - retrieve_rag_evidence
+        - run_llm_compare
+        - human_review
+      implementation_mapping:
+        build_review_packets:
+          implemented_by:
+            - build_review_packets
+        decide_rag_check:
+          implemented_by:
+            - build_controller(initial)
+            - build_controller(post_ontology)
+            - build_controller(post_compare)
+          notes:
+            - "Current first-pass decision logic is still simple."
+            - "Future versions should incorporate memory-aware skip logic, such as researcher-specified celltype-marker relationships."
+        build_candidate_map:
+          implemented_by:
+            - build_ontology_relations
+          notes:
+            - "This worker constructs ontology-constrained candidate sets from current labels and competing labels."
+            - "It is tightly coupled to change_annotation_preference because candidate neighborhoods change with coarse/balanced/fine policy."
+        retrieve_rag_evidence:
+          implemented_by:
+            - build_ontology_relations
+          notes:
+            - "Current implementation retrieves supportive evidence from reference databases during ontology-relations construction."
+            - "Custom marker memory and custom cell type memory should remain part of this evidence layer."
+            - "Future PDFMarker-derived evidence should also enter through this same evidence path."
+        run_llm_compare:
+          implemented_by:
+            - build_llm_compare
+          notes:
+            - "This worker assembles the final LLM comparison prompt and judge step."
+            - "Future metrics such as marker overlap scores can be added here as supportive inputs."
+        human_review:
+          implemented_by:
+            - agent interactive review step
+          notes:
+            - "This is the default next worker when unresolved clusters remain after LLM compare."
+            - "A user can still choose to inject new knowledge such as custom markers before finalizing a review answer."
+      notes:
+        - "run_RAG_check includes human review as its default terminal worker for unresolved clusters."
+        - "Exported annotations and report generation are intentionally outside this boundary."
+    outputs:
+      - "updated review/relation/compare/controller artifacts under runs/<run_id>"
+    status: "connected"
+
+  run_subcluster_pipeline:
+    user_facing: true
+    description: "Run a targeted subcluster analysis for one parent cell type."
+    controller_action: "run_subcluster_pipeline"
+    parameters:
+      celltype:
+        type: string
+        required: true
+      reason:
+        type: string
+        required: false
+    current_execution:
+      mode: worker_chain
+      phase_0_prepare:
+        - "append celltype to alignment.celltypes_to_subcluster"
+        - "append request to agent memory bucket subcluster_requests"
+      logical_pipeline:
+        - subcluster_find_markers
+        - subcluster_annotate_ontology
+        - subcluster_annotate_inheritance
+        - finalize_subcluster_annotations
+      workflow_meaning:
+        subcluster_find_markers: "Subset the chosen parent cell type, recluster it internally, and compute subcluster marker genes."
+        subcluster_annotate_ontology: "Run ontology-constrained subcluster annotation using Cell Ontology descendants of the parent cell type."
+        subcluster_annotate_inheritance: "Run parent-marker-inheritance subcluster annotation using parent-level marker context for subtype discovery."
+        finalize_subcluster_annotations: "Write both ontology and inherited subcluster annotations back to the full Seurat object and export final metadata/plots."
+      current_limitations:
+        - "RAG check for subcluster outputs is not fully connected yet."
+    outputs:
+      - "updated config"
+      - "updated agent memory"
+      - "eventual subcluster outputs under work/<project>/annotate_subclusters"
+    status: "connected"
+
+  change_annotation_preference:
+    user_facing: true
+    description: "Change an annotation preference such as granularity or resolution."
+    controller_action: "change_annotation_preference"
+    parameters:
+      preference_type:
+        type: enum
+        values: [granularity, resolution]
+        required: true
+      granularity:
+        type: enum
+        values: [coarse, balanced, fine]
+        required: false
+      desired_resolution:
+        type: number_or_null
+        required: false
+      reason:
+        type: string
+        required: true
+    current_execution:
+      mode: branching_preference_update
+      branches:
+        granularity:
+          steps:
+            - "update policy.granularity in config"
+          suggested_followup:
+            - run_RAG_check
+        resolution:
+          steps:
+            - "append entry to agent memory bucket resolution_feedback"
+          decision_branches:
+            existing_resolution:
+              workers:
+                - select_parent_resolution
+                - assign_parent_labels
+            new_resolution:
+              workers:
+                - preprocess_parent
+                - cluster_parent_markers
+                - annotate_parent_raw
+                - map_parent_ontology
+                - select_parent_resolution
+                - assign_parent_labels
+          suggested_followup:
+            - run_RAG_check
+    outputs:
+      - "updated config and/or agent memory"
+      - "updated parent label assignment outputs when resolution is changed"
+    status: "connected"
+
+  add_external_evidence:
+    user_facing: true
+    description: "Add user-provided external evidence, either by updating an existing cell type with markers or by defining a new custom cell type."
+    controller_action: "add_external_evidence"
+    parameters:
+      celltype:
+        type: string
+        required: true
+      markers:
+        type: string_array
+        required: false
+      knowledge_mode:
+        type: enum
+        values: [auto, update_existing, define_new]
+        required: false
+      note:
+        type: string
+        required: false
+    current_execution:
+      mode: branching_memory_update
+      notes:
+        - "This intent represents user-declared external evidence expressed directly in natural language."
+        - "The current implementation stores this evidence in two internal memory buckets: custom_markers and custom_celltypes."
+        - "These buckets are internal branches of the external-evidence layer, not a separate concept from external evidence."
+      branches:
+        update_existing:
+          steps:
+            - "append entry to agent memory bucket custom_markers"
+        define_new:
+          steps:
+            - "append entry to agent memory bucket custom_celltypes"
+      suggested_followup:
+        - run_RAG_check
+    outputs:
+      - "updated agent memory"
+    status: "connected"
+
+  extract_external_evidence:
+    user_facing: true
+    description: "Extract candidate external evidence from papers, PDFs, or databases before optionally adding it into project memory."
+    controller_action: "extract_external_evidence"
+    parameters:
+      topic:
+        type: string
+        required: false
+      source_hint:
+        type: string
+        required: false
+      reason:
+        type: string
+        required: true
+    current_execution:
+      mode: placeholder
+      notes:
+        - "This is a registered top-level intent."
+        - "Its worker chain is intentionally left unimplemented for now."
+        - "Future versions should search external sources, extract candidate celltype-marker evidence, and then hand off to add_external_evidence."
+    outputs:
+      - "none yet"
+    status: "placeholder"
+
+controller_only_actions:
+  build_review_packets:
+    description: "Build one parent-level review packet per cluster from existing parent outputs."
+    workers:
+      - build_review_packets
+  decide_rag_check:
+    description: "Decide which review units need deeper RAG checking versus direct keep/review."
+    workers:
+      - build_controller
+  build_ontology_relations:
+    description: "Construct ontology-constrained comparison candidates and evidence briefs."
+    workers:
+      - build_ontology_relations
+  build_candidate_map:
+    description: "Construct candidate maps from annotation labels and competing labels under ontology and granularity constraints."
+    workers:
+      - build_ontology_relations
+  retrieve_rag_evidence:
+    description: "Retrieve supportive evidence from reference databases and memory-backed knowledge sources."
+    workers:
+      - build_ontology_relations
+  build_llm_compare:
+    description: "Run ontology-constrained, reference-assisted LLM comparison."
+    workers:
+      - build_llm_compare
+  human_review:
+    description: "Request direct human review for unresolved clusters after automated RAG comparison."
+    workers:
+      - agent interactive review step
+  export_reviewed_parent_annotations:
+    description: "Write reviewed parent annotations back to per-cell CSV and Seurat RDS."
+    workers:
+      - export_reviewed_parent_annotations
+  generate_report:
+    description: "Build final report assets and HTML report."
+    workers:
+      - generate_report
+
+workers:
+  preprocess_parent:
+    group: gptanno_backbone
+    description: "Prepare the parent-level Seurat object and runtime inputs for downstream clustering and annotation."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('preprocess_parent')"
+    inputs:
+      - "inputs.seurat_rds"
+      - "annotation.parent_npcs"
+      - "annotation.parent_res"
+    depends_on: []
+    produces:
+      - "preprocessed parent Seurat context"
+      - "gptanno-tool-preprocess_parent.outputs.json"
+  cluster_parent_markers:
+    group: gptanno_backbone
+    description: "Run multi-resolution parent clustering and compute cluster marker genes."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('cluster_parent_markers')"
+    inputs:
+      - "preprocessed parent Seurat context"
+      - "annotation.parent_res"
+    depends_on:
+      - preprocess_parent
+    produces:
+      - "multi-resolution parent clusters"
+      - "parent marker tables"
+      - "gptanno-tool-cluster_parent_markers.outputs.json"
+  annotate_parent_raw:
+    group: gptanno_backbone
+    description: "Run the raw parent annotation pass across the prepared parent clusters."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('annotate_parent_raw')"
+    inputs:
+      - "parent clustering outputs"
+      - "llm model configuration"
+    depends_on:
+      - cluster_parent_markers
+    produces:
+      - "raw parent annotation summaries"
+      - "gptanno-tool-annotate_parent_raw.outputs.json"
+  map_parent_ontology:
+    group: gptanno_backbone
+    description: "Map raw parent labels onto Cell Ontology terms and distance summaries."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('map_parent_ontology')"
+    inputs:
+      - "raw parent annotation summaries"
+      - "Cell Ontology resources"
+    depends_on:
+      - annotate_parent_raw
+    produces:
+      - "ontology-mapped parent labels"
+      - "ontology distance summaries"
+      - "gptanno-tool-map_parent_ontology.outputs.json"
+  select_parent_resolution:
+    group: gptanno_backbone
+    description: "Choose the active parent clustering resolution, optionally honoring a forced resolution override."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('select_parent_resolution')"
+    inputs:
+      - "mapped parent annotation summaries"
+      - "annotation.forced_parent_resolution (optional)"
+    depends_on:
+      - map_parent_ontology
+    produces:
+      - "selected parent resolution"
+      - "annotation_summary_scores.csv"
+      - "gptanno-tool-select_parent_resolution.outputs.json"
+  assign_parent_labels:
+    group: gptanno_backbone
+    description: "Assign per-cluster and per-cell parent labels using the selected resolution."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('assign_parent_labels')"
+    inputs:
+      - "selected parent resolution"
+      - "mapped parent annotation summaries"
+    depends_on:
+      - select_parent_resolution
+    produces:
+      - "assigned parent labels"
+      - "annotation_parent outputs under work/<project>/annotate_parent"
+      - "gptanno-tool-assign_parent_labels.outputs.json"
+  subcluster_find_markers:
+    group: subcluster
+    description: "Subset the chosen parent cell type, recluster internally, and compute subcluster markers."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('subcluster_find_markers')"
+    inputs:
+      - "alignment.celltypes_to_subcluster"
+      - "assigned parent labels"
+    depends_on:
+      - assign_parent_labels
+    produces:
+      - "subcluster marker tables"
+      - "subcluster clustering outputs"
+      - "gptanno-tool-subcluster_find_markers.outputs.json"
+  subcluster_annotate_ontology:
+    group: subcluster
+    description: "Annotate subclusters inside ontology-constrained descendants of the chosen parent cell type."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('subcluster_annotate_ontology')"
+    inputs:
+      - "subcluster marker tables"
+      - "Cell Ontology descendants for selected parent cell type"
+    depends_on:
+      - subcluster_find_markers
+    produces:
+      - "ontology-based subcluster annotations"
+      - "gptanno-tool-subcluster_annotate_ontology.outputs.json"
+  subcluster_annotate_inheritance:
+    group: subcluster
+    description: "Annotate subclusters using parent-marker inheritance for subtype discovery."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('subcluster_annotate_inheritance')"
+    inputs:
+      - "subcluster marker tables"
+      - "parent marker context"
+    depends_on:
+      - subcluster_find_markers
+    produces:
+      - "inheritance-based subcluster annotations"
+      - "gptanno-tool-subcluster_annotate_inheritance.outputs.json"
+  finalize_subcluster_annotations:
+    group: subcluster
+    description: "Write subcluster annotations back to the Seurat object and export final subcluster outputs."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_gptanno_tool('finalize_subcluster_annotations')"
+    inputs:
+      - "ontology-based subcluster annotations"
+      - "inheritance-based subcluster annotations"
+    depends_on:
+      - subcluster_annotate_ontology
+      - subcluster_annotate_inheritance
+    produces:
+      - "annotate_subclusters outputs under work/<project>/annotate_subclusters"
+      - "gptanno-tool-finalize_subcluster_annotations.outputs.json"
+  build_review_packets:
+    group: rag_check
+    description: "Package current annotation state into one review unit per cluster."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_review_packets()"
+    inputs:
+      - "assigned parent labels"
+      - "review context from current run"
+    depends_on:
+      - assign_parent_labels
+    produces:
+      - "review_packets/index.json"
+      - "review packet JSONs per cluster"
+  decide_rag_check:
+    group: rag_check
+    description: "Plan which clusters can be finalized immediately versus requiring deeper RAG checking or human review."
+    interface_status: proxy
+    deployment_status: wrapped
+    needs_user_judgment: false
+    current_entry: "worker_runtime.run_decide_rag_check_worker()"
+    implemented_by: "orchestrator.generate_controller()"
+    inputs:
+      - "review packets"
+      - "controller phase"
+      - "external evidence memory"
+    depends_on:
+      - build_review_packets
+    produces:
+      - "controller/index.json"
+      - "controller state JSONs"
+      - "cluster next_action summary"
+    notes:
+      - "Current decision logic is simple."
+      - "Unique strong memory-backed marker matches are treated as golden-rule evidence."
+  build_candidate_map:
+    group: rag_check
+    description: "Construct ontology- and granularity-aware candidate sets for clusters that require comparison."
+    interface_status: proxy
+    deployment_status: wrapped
+    needs_user_judgment: false
+    current_entry: "worker_runtime.run_candidate_map_worker()"
+    implemented_by: "orchestrator.generate_ontology_relations()"
+    inputs:
+      - "review packets"
+      - "controller next_action=build_ontology_relations"
+      - "policy.granularity"
+      - "Cell Ontology resources"
+    depends_on:
+      - build_review_packets
+      - decide_rag_check
+    produces:
+      - "ontology_relations/summary.csv"
+      - "ontology_relations/relations/cluster-*.json"
+      - "candidate-map relation briefs"
+  retrieve_rag_evidence:
+    group: rag_check
+    description: "Retrieve supportive evidence from reference databases and project memory for the candidate map."
+    interface_status: proxy
+    deployment_status: wrapped
+    needs_user_judgment: false
+    current_entry: "worker_runtime.run_retrieve_rag_evidence_worker()"
+    implemented_by: "build_ontology_relations"
+    inputs:
+      - "candidate-map relation briefs"
+      - "PanglaoDB / CellMarker references"
+      - "external evidence memory"
+    depends_on:
+      - build_candidate_map
+    produces:
+      - "reference-evidence-enriched relation briefs"
+    notes:
+      - "Reference retrieval is still embedded inside ontology-relations."
+      - "Memory-backed evidence should continue to enter through this layer."
+  run_llm_compare:
+    group: rag_check
+    description: "Assemble the comparison prompt and have the LLM judge among the prepared candidates."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.generate_llm_compare()"
+    inputs:
+      - "candidate map"
+      - "retrieved RAG evidence"
+      - "llm model configuration"
+    depends_on:
+      - build_candidate_map
+      - retrieve_rag_evidence
+    produces:
+      - "llm_compare/summary.csv"
+      - "llm_compare/results/cluster-*.json"
+  human_review:
+    group: rag_check
+    interface_status: ready
+    deployment_status: manual
+    needs_user_judgment: true
+    description: "Collect explicit user decisions for unresolved clusters after automated comparison."
+    current_entry: "worker_runtime.run_human_review_worker()"
+    inputs:
+      - "controller post-compare state"
+      - "optional saved interactive decisions"
+    depends_on:
+      - run_llm_compare
+    produces:
+      - "reviewed_parent/interactive_decisions.json"
+      - "reviewed_parent/interactive_decisions.csv"
+  export_reviewed_parent_annotations:
+    group: outputs
+    description: "Write the reviewed parent decisions back to per-cell CSV and Seurat outputs."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "interactive_cli.export_reviewed_parent_annotations()"
+    inputs:
+      - "review_packets shared parent Seurat context"
+      - "saved human-review decisions"
+    depends_on:
+      - human_review
+    produces:
+      - "reviewed_parent/metadata_parent_reviewed.csv"
+      - "reviewed_parent/seurat_parent_reviewed.rds"
+      - "reviewed_parent/cluster_decisions.csv"
+  generate_report:
+    group: outputs
+    description: "Generate final report assets and the deliverable report file."
+    interface_status: ready
+    deployment_status: ready
+    needs_user_judgment: false
+    current_entry: "orchestrator.run(from_stage='report', to_stage='report')"
+    inputs:
+      - "manifest outputs from parent/subcluster/review stages"
+      - "reviewed parent outputs if available"
+    depends_on:
+      - export_reviewed_parent_annotations
+    produces:
+      - "report.html or report.pdf"
+      - "report_assets/figures/*"
+
+notes:
+  - "This file is the authoritative human-readable registry for top-level intents, controller actions, and worker chains."
+  - "Top-level user-facing intents should stay small in number."
+  - "Ontology mapping and literature search are currently treated as controller/worker-level capabilities, not top-level intents."

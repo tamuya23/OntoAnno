@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .agent_memory import load_agent_memory, marker_memory_matches
 from .utils import dump_json, ensure_dir, load_json, utc_now
 
 
@@ -16,6 +17,12 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 class LLMCompareError(RuntimeError):
     pass
+
+
+def _append_log(log_path: Path, message: str) -> None:
+    ensure_dir(log_path.parent)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(message.rstrip() + "\n")
 
 
 def _chat_completions_url(config: dict[str, Any]) -> str:
@@ -61,6 +68,7 @@ def _structured_user_prompt(
     policy_lines: list[str] = []
     evidence_lines = [
         "Treat reference marker databases as supportive evidence only, not as a golden rule.",
+        "If user-provided marker memory is present, weigh it as researcher-curated supportive evidence.",
         "The candidate labels were generated from this dataset's own marker context and should be weighed seriously.",
         "Lack of overlap with reference markers does not automatically reject a candidate.",
         "Balance three things: dataset-specific cluster markers, ontology-constrained candidate labels, and reference markers.",
@@ -88,6 +96,34 @@ def _structured_user_prompt(
         + "Return strict JSON only. Do not add markdown fences.\n"
         f"Use this schema: {json.dumps(schema, ensure_ascii=False)}"
     )
+
+
+def _memory_evidence_block(
+    *,
+    config: dict[str, Any],
+    focus_candidates: list[str],
+    current_label: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    memory = load_agent_memory(config)
+    matches = marker_memory_matches(
+        memory,
+        focus_candidates=focus_candidates,
+        current_label=current_label,
+    )
+    if not matches:
+        return "", []
+
+    lines = [
+        "User-provided marker memory (researcher-curated supportive evidence, not a golden rule):"
+    ]
+    for item in matches:
+        markers = ", ".join(item.get("markers", [])[:15]) or "none provided"
+        note = str(item.get("note") or "").strip()
+        detail = f"- {item.get('celltype')}: markers={markers}"
+        if note:
+            detail += f" | note={note}"
+        lines.append(detail)
+    return "\n".join(lines), matches
 
 
 def _extract_message_content(response_payload: dict[str, Any]) -> str:
@@ -222,10 +258,16 @@ def build_llm_compare(
     summary_path = output_dir / "summary.csv"
     index_path = output_dir / "index.json"
     outputs_path = output_dir / "llm_compare.outputs.json"
+    log_path = output_dir / "llm_compare.log"
     selected_ids = {str(item) for item in (cluster_ids or []) if str(item).strip()}
 
     if outputs_path.exists() and not force and not selected_ids:
         return load_json(outputs_path)
+
+    _append_log(
+        log_path,
+        f"[{utc_now()}] Starting llm_compare | force={force} | selected_clusters={sorted(selected_ids) if selected_ids else 'all'}",
+    )
 
     ontology_index_path = Path(ontology_outputs["index_json"])
     ontology_index = load_json(ontology_index_path)
@@ -258,6 +300,10 @@ def build_llm_compare(
         result_path = results_dir / f"cluster-{cluster_id}.json"
 
         if not prompt_ready:
+            _append_log(
+                log_path,
+                f"[{utc_now()}] cluster={cluster_id} skipped | current_label={current_label} | reason=no ontology comparison needed",
+            )
             payload = {
                 "cluster_id": cluster_id,
                 "current_label": current_label,
@@ -274,6 +320,13 @@ def build_llm_compare(
             continue
 
         prompt = str(reference_compare.get("prompt") or "")
+        memory_block, memory_matches = _memory_evidence_block(
+            config=config,
+            focus_candidates=focus_candidates,
+            current_label=current_label,
+        )
+        if memory_block:
+            prompt = f"{prompt}\n\n{memory_block}"
         user_prompt = _structured_user_prompt(
             prompt,
             focus_candidates,
@@ -281,9 +334,32 @@ def build_llm_compare(
             ontology_restricted=ontology_restricted,
         )
         try:
+            _append_log(
+                log_path,
+                "\n".join(
+                    [
+                        f"[{utc_now()}] cluster={cluster_id} querying model",
+                        f"current_label: {current_label}",
+                        f"focus_candidates: {', '.join(focus_candidates)}",
+                        "prompt_with_schema:",
+                        user_prompt,
+                        "",
+                    ]
+                ),
+            )
             raw_text, parsed_json, raw_response = _call_openai_chat(
                 config=config,
                 prompt=user_prompt,
+            )
+            _append_log(
+                log_path,
+                "\n".join(
+                    [
+                        f"[{utc_now()}] cluster={cluster_id} response",
+                        raw_text,
+                        "",
+                    ]
+                ),
             )
             normalized = _normalize_result(
                 parsed=parsed_json,
@@ -299,6 +375,7 @@ def build_llm_compare(
                 "allowed_candidates": allowed_candidates,
                 "prompt": prompt,
                 "prompt_with_schema": user_prompt,
+                "memory_matches": memory_matches,
                 "raw_response_text": raw_text,
                 "parsed_response": parsed_json,
                 "result": normalized,
@@ -310,6 +387,10 @@ def build_llm_compare(
             }
             dump_json(result_path, payload)
         except Exception as exc:  # noqa: BLE001
+            _append_log(
+                log_path,
+                f"[{utc_now()}] cluster={cluster_id} failed | error={exc}",
+            )
             payload = {
                 "cluster_id": cluster_id,
                 "current_label": current_label,
@@ -317,6 +398,7 @@ def build_llm_compare(
                 "focus_candidates": focus_candidates,
                 "allowed_candidates": allowed_candidates,
                 "prompt": prompt,
+                "memory_matches": memory_matches,
                 "error": str(exc),
                 "model": config["llm"]["annotation"]["model"],
                 "provider": provider,
@@ -390,10 +472,15 @@ def build_llm_compare(
         "output_dir": str(output_dir),
         "summary_csv": str(summary_path),
         "index_json": str(index_path),
+        "log": str(log_path),
         "result_count": len(index_relations),
         "completed_count": completed,
         "skipped_count": skipped,
         "failed_count": failed,
     }
     dump_json(outputs_path, outputs)
+    _append_log(
+        log_path,
+        f"[{utc_now()}] Completed llm_compare | completed={completed} skipped={skipped} failed={failed}",
+    )
     return outputs

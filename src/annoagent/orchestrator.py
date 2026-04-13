@@ -205,6 +205,11 @@ class Orchestrator:
         outputs_json = self.specs_dir / f"{stage}.outputs.json"
         return spec_path, outputs_json
 
+    def _gptanno_tool_spec(self, tool: str) -> tuple[Path, Path]:
+        spec_path = self.specs_dir / f"gptanno-tool-{tool}.json"
+        outputs_json = self.specs_dir / f"gptanno-tool-{tool}.outputs.json"
+        return spec_path, outputs_json
+
     def _base_annotation_spec(self, *, stage: str, outputs_json: Path) -> dict[str, Any]:
         return {
             "stage": stage,
@@ -217,6 +222,19 @@ class Orchestrator:
             "alignment": self.config["alignment"],
             "outputs_json": str(outputs_json),
         }
+
+    def _run_gptanno_tool(self, tool: str) -> dict[str, Any]:
+        spec_path, outputs_json = self._gptanno_tool_spec(tool)
+        spec = self._base_annotation_spec(stage=tool, outputs_json=outputs_json)
+        dump_json(spec_path, spec)
+        log_path = self.logs_dir / f"gptanno-tool-{tool}.log"
+        self._run_subprocess(
+            [self.config["_runtime"]["rscript"], self.config["_runtime"]["gptanno_tool_runner"], str(spec_path)],
+            log_path=log_path,
+        )
+        outputs = load_json(outputs_json)
+        outputs["log"] = str(log_path)
+        return outputs
 
     def _stage_preflight(self, force: bool) -> dict[str, Any]:
         del force
@@ -491,6 +509,22 @@ class Orchestrator:
             phase=phase,
         )
         self.manifest["outputs"]["controller"] = outputs
+        self._save_manifest()
+        return outputs
+
+    def generate_gptanno_tool(
+        self,
+        tool: str,
+        *,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        outputs_root = self.manifest.setdefault("outputs", {})
+        gptanno_outputs = outputs_root.setdefault("gptanno_tools", {})
+        if not force and tool in gptanno_outputs:
+            self._emit(f"GPTAnno tool '{tool}' already completed; reusing recorded outputs.")
+            return gptanno_outputs[tool]
+        outputs = self._run_gptanno_tool(tool)
+        gptanno_outputs[tool] = outputs
         self._save_manifest()
         return outputs
 

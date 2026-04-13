@@ -20,8 +20,7 @@ plot_celltype_comparison <- function(seurat_obj, original_col = NULL, annotation
   if (!annotation_col %in% colnames(seurat_obj@meta.data)) {
     stop(paste("Annotation column", annotation_col, "not found in Seurat object metadata."))
   }
-  reduction_names <- names(seurat_obj@reductions)
-  reduction_to_use <- if ("umap" %in% reduction_names) "umap" else NULL
+  reduction_to_use <- if ("umap" %in% names(seurat_obj@reductions)) "umap" else NULL
 
   if (is.null(original_col)) {
     p1 <- Seurat::DimPlot(seurat_obj, label = label, reduction = reduction_to_use, pt.size = pt.size) +
@@ -250,7 +249,10 @@ clean_and_match_annotation <- function(annotation, use_ols = FALSE) {
 #' @importFrom igraph graph_from_data_frame
 #' @export
 #' @examples
-#' # cl <- ontologyIndex::get_ontology("http://purl.obolibrary.org/obo/cl.obo", extract_tags = "everything")
+#' # cl <- ontologyIndex::get_ontology(
+#' #   "http://purl.obolibrary.org/obo/cl.obo",
+#' #   extract_tags = "everything"
+#' # )
 #' # graph <- build_ontology_graph(cl)
 build_ontology_graph <- function(ontology) {
   # Extract edges from parents
@@ -259,7 +261,7 @@ build_ontology_graph <- function(ontology) {
     to = rep(names(ontology$parents), sapply(ontology$parents, length)),
     stringsAsFactors = FALSE
   )
-  edges <- na.omit(edges)
+  edges <- stats::na.omit(edges)
   graph <- igraph::graph_from_data_frame(edges, directed = TRUE)
   return(graph)
 }
@@ -273,7 +275,7 @@ build_ontology_graph <- function(ontology) {
 build_ancestor_type_map <- function(cl) {
   stopifnot(requireNamespace("ontologyIndex"))
   # ontologyIndex::get_ancestors(cl, term) returns all ancestors for a term
-  ancestor_map <- setNames(
+  ancestor_map <- stats::setNames(
     lapply(names(cl$name), function(id) ontologyIndex::get_ancestors(cl, id)),
     names(cl$name)
   )
@@ -322,7 +324,11 @@ build_ancestor_type_map <- function(cl) {
 #' @importFrom jsonlite fromJSON
 #' @export
 search_ols <- function(query, size = 3) {
-  base_url <- "https://www.ebi.ac.uk/ols/api/search"
+  base_url <- "https://www.ebi.ac.uk/ols4/api/search"
+  query <- stringr::str_trim(query)
+  if (!nzchar(query)) {
+    return(NULL)
+  }
 
   # Function to calculate similarity score
   calculate_similarity <- function(query_terms, label) {
@@ -349,20 +355,33 @@ search_ols <- function(query, size = 3) {
     return(score)
   }
 
-  # Try multiple search strategies
+  # Try multiple search strategies, prioritizing exact phrase-style queries.
   search_queries <- c(
-    query,  # Original query
-    gsub("cardiomyocyte", "cardiac muscle cell", query),  # Replace cardiomyocyte with cardiac muscle cell
-    gsub("myocyte", "muscle cell", query)  # More general replacement
+    query,
+    if (!grepl("\\bcells?$", query, ignore.case = TRUE)) paste0(query, " cell") else NULL,
+    gsub("cardiomyocyte", "cardiac muscle cell", query, ignore.case = TRUE),
+    gsub("myocyte", "muscle cell", query, ignore.case = TRUE)
   )
+  search_queries <- unique(search_queries[nzchar(search_queries)])
+
+  search_specs <- unlist(lapply(search_queries, function(search_query) {
+    list(
+      list(q = search_query, exact = TRUE),
+      list(q = paste0("\"", search_query, "\""), exact = FALSE),
+      list(q = search_query, exact = FALSE)
+    )
+  }), recursive = FALSE)
 
   all_results <- list()
+  results_idx <- 1L
+  result_size <- max(size * 5L, 10L)
 
-  for (search_query in unique(search_queries)) {
+  for (spec in search_specs) {
     response <- httr::GET(base_url, query = list(
-      q = search_query,
+      q = spec$q,
       ontology = "cl",
-      size = 20,  # Get more results to find better matches
+      size = result_size,
+      exact = tolower(as.character(spec$exact)),
       queryFields = "label,synonym"
     ))
 
@@ -379,8 +398,16 @@ search_ols <- function(query, size = 3) {
           docs <- docs[grepl("^CL:", docs$obo_id), ]
         }
 
-        if (nrow(docs) > 0) {
-          all_results[[length(all_results) + 1]] <- docs
+                if (nrow(docs) > 0) {
+          docs$similarity_score <- vapply(
+            docs$label,
+            function(label) calculate_similarity(query, label),
+            numeric(1)
+          )
+          docs$exact_query <- spec$exact
+          docs$query_used <- spec$q
+          all_results[[results_idx]] <- docs[, c("label", "obo_id", "similarity_score", "exact_query", "query_used"), drop = FALSE]
+          results_idx <- results_idx + 1L
         }
       }
     }
@@ -390,23 +417,30 @@ search_ols <- function(query, size = 3) {
     # Combine all results
     combined_docs <- do.call(rbind, all_results)
 
-    # Remove duplicates based on obo_id
-    combined_docs <- combined_docs[!duplicated(combined_docs$obo_id), ]
+    if ("label" %in% colnames(combined_docs) && "obo_id" %in% colnames(combined_docs)) {
+      # Remove generic fallback hits unless the user explicitly searched for them.
+      if (tolower(query) != "cell") {
+        combined_docs <- combined_docs[tolower(combined_docs$label) != "cell", , drop = FALSE]
+      }
 
-    # Calculate similarity scores
-    if ("label" %in% colnames(combined_docs)) {
-      combined_docs$similarity_score <- sapply(combined_docs$label,
-                                               function(label) calculate_similarity(query, label))
+      # Keep only reasonably similar terms.
+      min_similarity <- if (length(strsplit(tolower(query), "\\s+")[[1]]) > 1) 30 else 20
+      combined_docs <- combined_docs[combined_docs$similarity_score >= min_similarity, , drop = FALSE]
 
-      # Sort by similarity score (descending)
-      combined_docs <- combined_docs[order(-combined_docs$similarity_score), ]
+      if (nrow(combined_docs) == 0) {
+        return(NULL)
+      }
 
-      # Select top results
-      combined_docs <- combined_docs[1:min(nrow(combined_docs), size), ]
+      # Prefer exact-query hits, then higher similarity.
+      combined_docs <- combined_docs[order(-as.numeric(combined_docs$exact_query),
+                                           -combined_docs$similarity_score,
+                                           combined_docs$label), , drop = FALSE]
 
-      # Return only the requested columns
-      result_cols <- intersect(c("label", "obo_id"), colnames(combined_docs))
-      return(combined_docs[, result_cols, drop = FALSE])
+      # Remove duplicates based on obo_id after ranking.
+      combined_docs <- combined_docs[!duplicated(combined_docs$obo_id), , drop = FALSE]
+      combined_docs <- combined_docs[seq_len(min(nrow(combined_docs), size)), , drop = FALSE]
+
+      return(combined_docs[, c("label", "obo_id"), drop = FALSE])
     }
   }
 

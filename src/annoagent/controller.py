@@ -4,11 +4,18 @@ import csv
 from pathlib import Path
 from typing import Any
 
+from .agent_memory import external_evidence_matches, load_agent_memory
 from .utils import dump_json, ensure_dir, load_json, utc_now
 
 
 class ControllerError(RuntimeError):
     pass
+
+
+def _append_log(log_path: Path, message: str) -> None:
+    ensure_dir(log_path.parent)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(message.rstrip() + "\n")
 
 
 CONTROLLER_PHASES = ("initial", "post_ontology", "post_compare")
@@ -95,13 +102,34 @@ def _stable_initial_keep(review_state: dict[str, Any]) -> bool:
     return max_percentage_value >= 95.0 and not other_annotations and not needs_review
 
 
-def _initial_cluster_state(review_state: dict[str, Any]) -> dict[str, Any]:
+def _initial_cluster_state(review_state: dict[str, Any], *, memory: dict[str, Any]) -> dict[str, Any]:
     current_label = str(review_state.get("current_label") or "")
+    markers = review_state.get("markers", [])
+    evidence_matches = external_evidence_matches(memory, cluster_markers=markers)
     next_action = "ask_user"
     recommended_label: str | None = None
     reason_codes: list[str] = []
 
-    if not current_label:
+    if evidence_matches:
+        top_match = evidence_matches[0]
+        top_count = int(top_match.get("overlap_count", 0) or 0)
+        top_ties = [
+            item for item in evidence_matches
+            if int(item.get("overlap_count", 0) or 0) == top_count
+        ]
+        if len(top_ties) == 1 and str(top_match.get("celltype") or "").strip():
+            matched_label = str(top_match.get("celltype") or "").strip()
+            if matched_label == current_label:
+                next_action = "finalize_keep_current"
+                recommended_label = current_label
+            else:
+                next_action = "finalize_llm_choice"
+                recommended_label = matched_label
+            reason_codes.append("memory_golden_rule_match")
+        else:
+            next_action = "ask_user"
+            reason_codes.append("memory_golden_rule_ambiguous")
+    elif not current_label:
         next_action = "ask_user"
         reason_codes.append("missing_current_label")
     elif _stable_initial_keep(review_state):
@@ -116,12 +144,13 @@ def _initial_cluster_state(review_state: dict[str, Any]) -> dict[str, Any]:
         "cluster_id": review_state["cluster_id"],
         "current_label": current_label,
         "cell_count": review_state.get("cell_count"),
-        "markers": review_state.get("markers", []),
+        "markers": markers,
         "max_percentage": review_state.get("max_percentage"),
         "other_annotations": review_state.get("other_annotations"),
         "avg_distance": review_state.get("avg_distance"),
         "needs_review_flag": review_state.get("needs_review_flag"),
         "review_notes": review_state.get("review_notes", []),
+        "memory_matches": evidence_matches,
         "packet_json": review_state.get("packet_json"),
         "phase": "initial",
         "next_action": next_action,
@@ -273,13 +302,14 @@ def _detect_phase(*, ontology_clusters: dict[str, dict[str, Any]], llm_clusters:
     return "initial"
 
 
-def plan_next_actions(*, run_dir: Path, phase: str = "auto") -> dict[str, Any]:
+def plan_next_actions(*, config: dict[str, Any] | None = None, run_dir: Path, phase: str = "auto") -> dict[str, Any]:
     if phase not in {*CONTROLLER_PHASES, "auto"}:
         raise ControllerError(f"Unsupported controller phase: {phase}")
 
     review_clusters = _read_review_clusters(run_dir)
     ontology_clusters = _read_ontology_clusters(run_dir)
     llm_clusters = _read_llm_clusters(run_dir)
+    memory = load_agent_memory(config) if config is not None else {}
     effective_phase = _detect_phase(
         ontology_clusters=ontology_clusters,
         llm_clusters=llm_clusters,
@@ -293,14 +323,14 @@ def plan_next_actions(*, run_dir: Path, phase: str = "auto") -> dict[str, Any]:
         review_state = review_clusters.get(cluster_id)
         if review_state is None:
             continue
-        state = _initial_cluster_state(review_state)
+        state = _initial_cluster_state(review_state, memory=memory)
 
-        if effective_phase in {"post_ontology", "post_compare"}:
+        if effective_phase in {"post_ontology", "post_compare"} and state.get("next_action") == "build_ontology_relations":
             ontology_state = ontology_clusters.get(cluster_id)
             if ontology_state is not None:
                 state = _merge_ontology_state(state, ontology_state)
 
-        if effective_phase == "post_compare":
+        if effective_phase == "post_compare" and state.get("next_action") not in {"finalize_keep_current", "finalize_llm_choice"}:
             llm_state = llm_clusters.get(cluster_id)
             if llm_state is not None:
                 state = _merge_llm_state(state, llm_state)
@@ -339,6 +369,7 @@ def build_controller(
     summary_path = output_dir / "summary.csv"
     index_path = output_dir / "index.json"
     outputs_path = output_dir / "controller.outputs.json"
+    log_path = output_dir / "controller.log"
 
     if outputs_path.exists() and not force:
         cached = load_json(outputs_path)
@@ -346,7 +377,11 @@ def build_controller(
         if phase == "auto" or cached_phase == phase:
             return cached
 
-    payload = plan_next_actions(run_dir=run_dir, phase=phase)
+    payload = plan_next_actions(config=config, run_dir=run_dir, phase=phase)
+    _append_log(
+        log_path,
+        f"[{utc_now()}] build_controller | requested_phase={phase} | effective_phase={payload.get('phase')}",
+    )
     state_items: list[dict[str, Any]] = []
     summary_rows: list[dict[str, str]] = []
 
@@ -381,6 +416,10 @@ def build_controller(
                 "state_json": str(state_path),
             }
         )
+        _append_log(
+            log_path,
+            f"[{utc_now()}] cluster={cluster_id} next_action={cluster.get('next_action')} recommended_label={cluster.get('recommended_label') or ''} reason_codes={','.join(cluster.get('reason_codes', []))}",
+        )
 
     fieldnames = [
         "cluster_id",
@@ -414,6 +453,7 @@ def build_controller(
         "output_dir": str(output_dir),
         "summary_csv": str(summary_path),
         "index_json": str(index_path),
+        "log": str(log_path),
         "state_count": len(state_items),
         "phase": payload.get("phase"),
         "summary": payload.get("summary", {}),

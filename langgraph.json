@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "annoagent_architecture": "./src/annoagent/agent_graph_visual.py:graph"
+  }
+}

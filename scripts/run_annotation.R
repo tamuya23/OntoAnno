@@ -14,6 +14,9 @@ if (!requireNamespace("pkgload", quietly = TRUE)) {
 if (!requireNamespace("ellmer", quietly = TRUE)) {
   stop("Package 'ellmer' is required.")
 }
+if (!requireNamespace("magrittr", quietly = TRUE)) {
+  stop("Package 'magrittr' is required.")
+}
 if (!requireNamespace("ontologyIndex", quietly = TRUE)) {
   stop("Package 'ontologyIndex' is required.")
 }
@@ -135,6 +138,30 @@ inputs <- spec$inputs
 annotation_cfg <- spec$annotation
 alignment_cfg <- spec$alignment
 
+recreate_seurat_if_needed <- function(seurat_obj) {
+  counts <- NULL
+  counts <- tryCatch(
+    Seurat::GetAssayData(seurat_obj, layer = "counts"),
+    error = function(e) {
+      tryCatch(
+        Seurat::GetAssayData(seurat_obj, slot = "counts"),
+        error = function(e2) NULL
+      )
+    }
+  )
+  if (is.null(counts)) {
+    return(seurat_obj)
+  }
+
+  metadata <- seurat_obj@meta.data
+  recreated <- Seurat::CreateSeuratObject(counts = counts, meta.data = metadata)
+  return(recreated)
+}
+
+has_pca_reduction <- function(seurat_obj) {
+  "pca" %in% names(seurat_obj@reductions)
+}
+
 build_annotation_context <- local({
   cache <- NULL
 
@@ -186,11 +213,17 @@ run_parent_stage <- function() {
   }
 
   context <- build_annotation_context()
-  seurat_obj <- readRDS(inputs$seurat_rds)
+  seurat_obj <- recreate_seurat_if_needed(readRDS(inputs$seurat_rds))
 
   if (isTRUE(annotation_cfg$preprocess)) {
     if (file.exists(preprocessed_rds)) {
       seurat_obj <- readRDS(preprocessed_rds)
+      if (!has_pca_reduction(seurat_obj)) {
+        seurat_obj <- preprocess_seurat_object(
+          recreate_seurat_if_needed(readRDS(inputs$seurat_rds)),
+          save_path = preprocessed_rds
+        )
+      }
     } else {
       seurat_obj <- preprocess_seurat_object(
         seurat_obj,

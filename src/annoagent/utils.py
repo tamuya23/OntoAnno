@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,19 @@ STAGES = [
     "pdfmarkers",
     "evaluate_optional",
     "report",
+]
+
+GPTANNO_TOOLS = [
+    "preprocess_parent",
+    "cluster_parent_markers",
+    "annotate_parent_raw",
+    "map_parent_ontology",
+    "select_parent_resolution",
+    "assign_parent_labels",
+    "subcluster_find_markers",
+    "subcluster_annotate_ontology",
+    "subcluster_annotate_inheritance",
+    "finalize_subcluster_annotations",
 ]
 
 
@@ -38,9 +52,16 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def dump_json(path: Path, payload: Any) -> None:
     ensure_dir(path.parent)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        tmp_path = Path(handle.name)
     tmp_path.replace(path)
 
 

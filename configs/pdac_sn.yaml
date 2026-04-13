@@ -1,13 +1,13 @@
 project:
-  name: AgingV2
-  work_dir: /proj/bzou_lab/projects/AnnoAgent/work/AgingV2
+  name: PDAC_sn
+  work_dir: /proj/bzou_lab/projects/AnnoAgent/work/PDAC_sn
 inputs:
-  seurat_rds: /proj/bzou_lab/projects/GPTAnno_Experiment/AgingV2/Aging_preprocessed.rds
-  manual_labels_csv: /proj/bzou_lab/projects/GPTAnno_Experiment/AgingV2/Aging_metadata_update.csv
+  seurat_rds: /proj/bzou_lab/projects/GPTAnno_Experiment/PDAC_sn/PDAC_sn.rds
+  manual_labels_csv: /proj/bzou_lab/projects/GPTAnno_Experiment/PDAC_sn/PDAC_singleR_annotation.csv
   pdf_dir: null
 policy:
   ontology: true
-  granularity: fine
+  granularity: balanced
   fallback: up
   review_tie: true
   review_nomatch: true
@@ -24,27 +24,29 @@ llm:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
 annotation:
-  species: mouse
+  species: human
   parent_res:
   - 0.1
   - 0.3
   sub_res:
   - 0.1
-  - 0.3
-  preprocess: false
+  - 0.2
+  preprocess: true
   min_cell_count: 5000
-  tissue_name: mouse adult heart non-cardiomyocytes
+  tissue_name: Human pancreatic ductal adenocarcinoma (PDAC) tumor
   n_runs_parent: 10
   n_runs_sub: 10
+  forced_parent_resolution: '0.3'
 alignment:
-  celltypes_to_subcluster: null
+  celltypes_to_subcluster:
+  - macrophage
   user_restrict_to: {}
   combine_restrictions: true
   manual_resolution_map: {}
   on_missing_decision: stop
 evaluation:
   enabled: true
-  manual_col: celltype.lv1
+  manual_col: SingleR_labels
   baselines: []
 report:
   format: html
