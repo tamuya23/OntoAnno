@@ -561,12 +561,20 @@ def _resolve_parent_annotation_outputs(config: dict[str, Any], outputs: dict[str
     if isinstance(project_config, dict):
         work_dir_value = project_config.get("work_dir")
     parent_dir = Path(str(work_dir_value)) / "annotate_parent" if work_dir_value else None
+    fallback_parent_seurat = str(parent_dir / "seurat_parent_annotated.rds") if parent_dir else ""
+
+    def existing_path(*candidates: Any) -> str:
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value and Path(value).exists():
+                return value
+        return ""
 
     resolved = {
-        "parent_seurat_rds": (
-            parent_outputs.get("parent_seurat_rds")
-            or assign_parent_outputs.get("parent_seurat_rds")
-            or (str(parent_dir / "seurat_parent_annotated.rds") if parent_dir else "")
+        "parent_seurat_rds": existing_path(
+            parent_outputs.get("parent_seurat_rds") or "",
+            assign_parent_outputs.get("parent_seurat_rds") or "",
+            fallback_parent_seurat,
         ),
         "cluster_col": (
             parent_outputs.get("cluster_col")
