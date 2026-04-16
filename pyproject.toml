@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "annoagent"
+name = "ontoanno"
 version = "0.1.0"
 description = "CLI orchestration layer for GPTAnno and PDF2markers"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ dependencies = ["PyYAML", "Jinja2", "Pillow"]
 ui = ["streamlit>=1.40"]
 
 [project.scripts]
-annoagent = "annoagent.cli:main"
+ontoanno = "ontoanno.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

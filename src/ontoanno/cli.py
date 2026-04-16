@@ -31,7 +31,7 @@ def _report_output_path(config: dict[str, object], run_dir: Path) -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AnnoAgent CLI")
+    parser = argparse.ArgumentParser(description="OntoAnno CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate = subparsers.add_parser("validate", help="Validate config and environment")
@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ui = subparsers.add_parser(
         "ui",
-        help="Start the local Streamlit workbench for AnnoAgent",
+        help="Start the local Streamlit workbench for OntoAnno",
     )
     ui.add_argument("--config", required=True)
     ui.add_argument("--reset-session", action="store_true")
@@ -131,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     worker_run = subparsers.add_parser(
         "worker-run",
-        help="Run one deployed worker through the normalized AnnoAgent worker runtime",
+        help="Run one deployed worker through the normalized OntoAnno worker runtime",
     )
     worker_run.add_argument("--config", required=True)
     worker_run.add_argument("--worker", required=True, choices=AVAILABLE_WORKERS)
@@ -215,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "ask":
-        message = args.message or input("AnnoAgent request> ").strip()
+        message = args.message or input("OntoAnno request> ").strip()
         result = route_agent_request(
             config=config,
             orchestrator=orchestrator,
@@ -263,13 +263,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "ui":
         env = os.environ.copy()
-        env["ANNOAGENT_STREAMLIT_CONFIG"] = config["_meta"]["config_path"]
-        env["ANNOAGENT_STREAMLIT_RESET_SESSION"] = "1" if args.reset_session else "0"
+        env["ONTOANNO_STREAMLIT_CONFIG"] = config["_meta"]["config_path"]
+        env["ONTOANNO_STREAMLIT_RESET_SESSION"] = "1" if args.reset_session else "0"
         matplotlib_cache = repo_root / ".cache" / "matplotlib"
         matplotlib_cache.mkdir(parents=True, exist_ok=True)
         env.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
         env.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
-        app_path = repo_root / "src" / "annoagent" / "streamlit_app.py"
+        app_path = repo_root / "src" / "ontoanno" / "streamlit_app.py"
         command = [
             sys.executable,
             "-m",

@@ -13,7 +13,7 @@ class InteractiveReviewError(RuntimeError):
 
 
 def _interactive_print(message: str) -> None:
-    print(f"[AnnoAgent] {message}", flush=True)
+    print(f"[OntoAnno] {message}", flush=True)
 
 
 def _prompt_granularity(default: str) -> str:

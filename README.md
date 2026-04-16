@@ -1,167 +1,274 @@
-# AnnoAgent
+# OntoAnno
 
-AnnoAgent is a Python-orchestrated CLI wrapper around the vendored `GPTAnno/` R package and `GPTAnno/PDF2markers/` Python pipeline.
+OntoAnno is a Python orchestration layer around the vendored `GPTAnno/` R package. It provides:
 
-V1 is designed for configuration-driven single-dataset runs:
+- a stage-based CLI for reproducible runs
+- an agent router that maps natural-language requests to high-level actions
+- a normalized worker runtime for debugging and partial reruns
+- a local Streamlit workbench for interactive use
 
-- input Seurat RDS
-- optional preprocessing
-- multi-resolution clustering
-- parent annotation
-- subcluster annotation
-- optional PDF marker extraction
-- optional evaluation hooks
-- HTML report generation
+The runtime model is simple:
 
-The agent only writes inside this repository:
+- Python handles routing, controller logic, state, memory, UI, and subprocess orchestration
+- R handles the heavy annotation workers and Seurat-based plotting/export
 
-- `work/<project>/...` for analysis artifacts
-- `runs/<run_id>/...` for run state, logs, manifests, and reports
+OntoAnno writes only inside this repository:
 
-## Quick Start
+- `work/<project>/...` for durable project artifacts
+- `runs/<run_id>/...` for run-local state, logs, manifests, review artifacts, and reports
 
-```bash
-python3 annoagent validate --config configs/agingv2.yaml
-python3 annoagent run --config configs/agingv2.yaml
-python3 annoagent report --config configs/agingv2.yaml
-python3 annoagent pdfmarkers --config configs/agingv2.yaml --pdf path/to/paper.pdf
-python3 annoagent agent --config configs/agingv2.yaml
-python3 annoagent ask --config configs/agingv2.yaml --message "labels are too coarse, make them more specific"
-python3 annoagent chat --config configs/agingv2.yaml
-python3 annoagent ui --config configs/agingv2.yaml
-python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool select_parent_resolution
-python3 annoagent workers --config configs/agingv2.yaml
-python3 annoagent worker-run --config configs/agingv2.yaml --worker build_review_packets
-```
+## Environment
 
-`annoagent run` uses `Rscript` from `PATH` by default. If R is installed elsewhere, set `ANNOAGENT_RSCRIPT=/path/to/Rscript`.
+OntoAnno needs both a Python environment and an R environment.
 
-`ontology-relations` will use a local Cell Ontology OBO first when available. To
-avoid network downloads, set:
+The intended setup is:
+
+- one Python environment for `ontoanno`
+- one R installation with the packages needed by `GPTAnno`
+- `ONTOANNO_RSCRIPT` used to bridge Python to that R environment
+
+### Python
+
+Minimum:
+
+- Python `>=3.11`
+- packages from `pyproject.toml`
+
+Install the package in editable mode:
 
 ```bash
-export ANNOAGENT_CL_OBO=/path/to/cl.obo
+cd /proj/bzou_lab/projects/OntoAnno
+pip install -e .
 ```
 
-For LLM-backed stages, set the required environment variables before running:
-
-```bash
-export OPENAI_API_KEY=...
-export OPENAI_BASE_URL=...   # optional
-```
-
-The default report output is:
-
-- `runs/<run_id>/report.html`
-
-## Natural-Language Requests
-
-`ask` is an LLM-driven controller entry. It reads the current AnnoAgent state,
-lets the model choose a tool call, and then executes that tool to
-update config or agent memory. It also keeps a small per-project conversation
-session so follow-up requests can refer to earlier turns.
-
-`chat` uses the same LLM router and session store, but keeps you inside a
-persistent CLI conversation. Tool calls execute immediately.
-
-```bash
-python3 annoagent chat --config configs/agingv2.yaml
-```
-
-## Streamlit Workbench
-
-AnnoAgent also includes a lightweight local Streamlit workbench. It uses the
-same Python/R backend as the CLI:
-
-- Python runs the router, controller, memory, and worker dispatch
-- R workers are still executed locally through `Rscript`
-
-Start it with:
-
-```bash
-python3 annoagent ui --config configs/agingv2.yaml
-```
-
-Useful flags:
-
-```bash
-python3 annoagent ui --config configs/agingv2.yaml --reset-session
-python3 annoagent ui --config configs/agingv2.yaml --server-port 8502
-```
-
-If Streamlit is missing in your current Python environment, install the optional
-UI dependency set:
+If you want the Streamlit UI:
 
 ```bash
 pip install -e .[ui]
 ```
 
+Current Python package dependencies are intentionally small:
+
+- `PyYAML`
+- `Jinja2`
+- `Pillow`
+- optional `streamlit>=1.40`
+
+### R
+
+OntoAnno does not manage the R environment for you. The `Rscript` binary you point at must already have the packages required by:
+
+- `GPTAnno/`
+- `scripts/run_annotation.R`
+- `scripts/run_gptanno_tool.R`
+- `scripts/export_report_figures.R`
+- `scripts/export_reviewed_parent_annotations.R`
+
+In practice that means the R side must already be able to run:
+
+- `Seurat`
+- `ggplot2`
+- `jsonlite`
+- and the packages imported by the vendored `GPTAnno` code
+
+Set the R entrypoint explicitly when it is not on `PATH`:
+
+```bash
+export ONTOANNO_RSCRIPT=/nas/longleaf/rhel9/apps/r/4.4.0/bin/Rscript
+```
+
+### Environment Variables
+
+Required for OpenAI-backed routes/workers:
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+Optional:
+
+```bash
+export OPENAI_BASE_URL=...
+export ONTOANNO_CL_OBO=/path/to/cl.obo
+```
+
+`ONTOANNO_CL_OBO` avoids re-fetching the Cell Ontology OBO and is the cleanest setup for cluster review and ontology mapping.
+
+### Validate First
+
+Before running anything substantial:
+
+```bash
+python3 ontoanno validate --config configs/pdac_sn.yaml
+```
+
+This checks:
+
+- required config keys
+- core input files
+- vendored helper scripts
+- policy validity
+- PDF inputs if configured
+
+## Configuration
+
+A single YAML file is the user-maintained source of truth. Python loads it, resolves environment variables, and generates stage- or worker-specific specs for R.
+
 Example:
 
+- [configs/pdac_sn.yaml](/proj/bzou_lab/projects/OntoAnno/configs/pdac_sn.yaml)
+
+Important top-level sections:
+
+- `project`
+  - `name`
+  - `work_dir`
+- `inputs`
+  - `seurat_rds`
+  - `manual_labels_csv`
+  - `pdf_dir`
+- `policy`
+  - `ontology`
+  - `granularity`
+  - `fallback`
+  - `review_tie`
+  - `review_nomatch`
+- `llm`
+  - `annotation`
+  - `pdfmarkers`
+- `annotation`
+  - `species`
+  - `parent_res`
+  - `sub_res`
+  - `preprocess`
+  - `min_cell_count`
+  - `tissue_name`
+  - `n_runs_parent`
+  - `n_runs_sub`
+  - `forced_parent_resolution`
+- `alignment`
+  - `celltypes_to_subcluster`
+  - `user_restrict_to`
+  - `combine_restrictions`
+  - `manual_resolution_map`
+  - `on_missing_decision`
+- `evaluation`
+- `report`
+
+Two fields matter especially for current agent behavior:
+
+- `annotation.parent_res`
+  - the set of parent resolutions the algorithm will try or has been told to try
+- `annotation.forced_parent_resolution`
+  - the currently forced/selected parent resolution when applicable
+
+## Quick Start
+
+Typical setup:
+
 ```bash
-python3 annoagent ask --config configs/agingv2.yaml --message "the labels are too coarse, make them more specific"
+cd /proj/bzou_lab/projects/OntoAnno
+export ONTOANNO_RSCRIPT=/nas/longleaf/rhel9/apps/r/4.4.0/bin/Rscript
+export OPENAI_API_KEY=...
+python3 ontoanno validate --config configs/pdac_sn.yaml
+python3 ontoanno ui --config configs/pdac_sn.yaml
 ```
 
-Reset the per-project session if you want to start a fresh conversation:
+For most users, the main entrypoint is the local Streamlit workbench. The CLI remains available underneath it, but it is primarily a developer/debugging interface now.
+
+## Streamlit Workbench
+
+Start it with:
 
 ```bash
-python3 annoagent ask --config configs/agingv2.yaml --reset-session --message "start over"
+python3 ontoanno ui --config configs/pdac_sn.yaml
 ```
 
-Apply the parsed action:
+Useful flags:
 
 ```bash
-python3 annoagent ask --config configs/agingv2.yaml --message "I have new marker genes for pericyte: RGS5, CSPG4, MCAM"
+python3 ontoanno ui --config configs/pdac_sn.yaml --reset-session
+python3 ontoanno ui --config configs/pdac_sn.yaml --server-port 8502
 ```
 
-Current supported intent families:
+The Streamlit UI is a local workbench, not a separate backend service. It uses the same router, controller, memory, and worker runtime as the CLI.
 
-- `run_parent_pipeline`: rerun the full parent backbone
-- `run_RAG_check`: rerun the current RAG-based check/review flow on available annotations
-- `run_subcluster_pipeline`: run a targeted subcluster analysis for one parent cell type
-- `change_annotation_preference`: change granularity, force an existing resolution, or add a new resolution and rerun the parent backbone
-- `add_external_evidence`: add user-provided external evidence by updating an existing cell type with markers or defining a new custom cell type
-- `extract_external_evidence`: registered placeholder intent for future paper/database evidence extraction
+Main areas:
 
-The authoritative registry for top-level intents, controller actions, and
-worker chains is stored at:
+- `Chat`
+  - normal natural-language interaction with the agent
+- `Run Status`
+  - 5 coarse phases:
+    - `Cluster`
+    - `Annotate`
+    - `Subcluster`
+    - `RAG_Check`
+    - `Report`
+  - current active worker log tail
+- `Artifacts`
+  - `Parent Annotation`
+  - `Subcluster`
+  - `RAG Review`
+  - `Report`
+- `External Evidence`
+  - user-provided evidence
+  - literature-provided evidence placeholder
+- `Workers`
+  - low-level debugging panel for direct worker execution
 
-- `resources/agent_registry.yaml`
+## Natural-Language Routes
 
-You can print the current worker contract inventory directly from the CLI:
+The router is implemented in [src/ontoanno/agent_router.py](/proj/bzou_lab/projects/OntoAnno/src/ontoanno/agent_router.py). The canonical route registry is [resources/agent_registry.yaml](/proj/bzou_lab/projects/OntoAnno/resources/agent_registry.yaml).
 
-```bash
-python3 annoagent workers --config configs/agingv2.yaml
-```
+The router turns natural-language requests into one high-level action. The controller then translates that action into a worker chain. The UI uses this path for normal interaction.
 
-You can also run one deployed worker directly through the normalized worker runtime:
+Current top-level routes are:
 
-```bash
-python3 annoagent worker-run --config configs/agingv2.yaml --worker build_review_packets
-python3 annoagent worker-run --config configs/agingv2.yaml --worker decide_rag_check --phase initial
-python3 annoagent worker-run --config configs/agingv2.yaml --worker build_candidate_map
-```
+### `run_parent_pipeline`
 
-An explicit LangGraph-style architecture definition is stored at:
+Purpose:
 
-- `src/annoagent/agent_graph.py`
-- `src/annoagent/agent_graph_visual.py`
+- run the full parent backbone from preprocessing through assigned parent labels
 
-The repository root also includes:
+Current worker chain:
 
-- `langgraph.json`
+- `preprocess_parent`
+- `cluster_parent_markers`
+- `annotate_parent_raw`
+- `map_parent_ontology`
+- `select_parent_resolution`
+- `assign_parent_labels`
 
-These files do not replace the runtime controller. They exist so the current
-Router / Controller / Worker architecture is explicitly modeled in Python for
-graph visualization tooling.
+When to use:
 
-- `agent_graph.py` is registry-driven and easier to keep in sync with the architecture registry.
-- `agent_graph_visual.py` is an explicit, visualization-oriented graph definition for tools that prefer literal node/edge declarations.
+- first full parent run
+- adding a genuinely new parent resolution
+- refreshing parent annotation artifacts from scratch
 
-The `langgraph.json` file currently points visualization tools at the
-module-level `graph` object exported by `src/annoagent/agent_graph_visual.py`.
+### `run_subcluster_pipeline`
 
-Current conceptual workers inside `run_RAG_check` are:
+Purpose:
+
+- run targeted subclustering for one parent cell type
+
+Current worker chain:
+
+- `subcluster_find_markers`
+- `subcluster_annotate_ontology`
+- `subcluster_annotate_inheritance`
+- `finalize_subcluster_annotations`
+
+When to use:
+
+- drill down into a specific parent population such as `macrophage` or `pericyte`
+
+### `run_RAG_check`
+
+Purpose:
+
+- run the current review/check pipeline on existing annotations
+
+Logical worker chain:
 
 - `build_review_packets`
 - `decide_rag_check`
@@ -170,170 +277,253 @@ Current conceptual workers inside `run_RAG_check` are:
 - `run_llm_compare`
 - `human_review`
 
-Persistent agent memory is stored at:
+Boundary:
 
-- `work/<project>/agent_memory.json`
+- this route stops at review/human-review
+- export and report are intentionally separate
 
-Conversation/session state is stored at:
+### `change_annotation_preference`
 
-- `work/<project>/agent_session.json`
+Purpose:
 
-User-provided marker memory is later injected into `llm-compare` as additional
-researcher-curated supportive evidence.
+- change either `granularity` or `resolution`
 
-## GPTAnno Backbone Tools
+Behavior:
 
-The original vendored GPTAnno backbone is now exposed as decomposed worker
-tools without changing the existing top-level `run` stages. These tools are
-useful for debugging, future agent control, and strict chain-of-custody around
-which part of the backbone is being rerun.
+- `granularity`
+  - updates policy only
+  - suggested next step is usually `run_RAG_check`
+- `resolution`
+  - if the resolution already exists, switch to it
+  - if it is new, extend `annotation.parent_res` and rerun the parent backbone
 
-```bash
-python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool preprocess_parent
-python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool cluster_parent_markers
-python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool annotate_parent_raw
-python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool map_parent_ontology
-python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool select_parent_resolution
-python3 annoagent gptanno-tool --config configs/agingv2.yaml --tool assign_parent_labels
-```
+Important distinction:
 
-Available parent/subcluster backbone tools:
+- `resolution`
+  - changes clustering-level state
+- `granularity`
+  - changes labeling specificity after clusters/markers are fixed
+
+### `add_external_evidence`
+
+Purpose:
+
+- store user-provided evidence such as `celltype -> markers`
+
+Behavior:
+
+- update existing celltype evidence
+- or define a new custom celltype entry
+
+Storage:
+
+- internal memory buckets still use:
+  - `custom_markers`
+  - `custom_celltypes`
+- conceptually they are both part of the external-evidence layer
+
+Typical next step:
+
+- `run_RAG_check`
+
+### `extract_external_evidence`
+
+Purpose:
+
+- future route for literature/database extraction
+
+Current state:
+
+- registered placeholder intent
+- worker chain intentionally not implemented yet
+
+### `run_report`
+
+Purpose:
+
+- generate the final report from current artifacts
+
+Current worker chain:
+
+- `generate_report`
+
+Current behavior:
+
+- if saved reviewed decisions exist and reviewed outputs have not yet been exported, report generation first attempts reviewed export automatically
+
+## Worker Inventory
+
+The normalized worker contracts are defined in [resources/agent_registry.yaml](/proj/bzou_lab/projects/OntoAnno/resources/agent_registry.yaml) and formatted by [src/ontoanno/worker_contracts.py](/proj/bzou_lab/projects/OntoAnno/src/ontoanno/worker_contracts.py).
+
+### GPTAnno Backbone Workers
 
 - `preprocess_parent`
+  - prepare parent-level Seurat input and runtime context
 - `cluster_parent_markers`
+  - cluster parent cells at multiple resolutions and compute markers
 - `annotate_parent_raw`
+  - run raw parent annotation
 - `map_parent_ontology`
+  - map raw parent labels onto Cell Ontology
 - `select_parent_resolution`
+  - choose the active parent resolution
 - `assign_parent_labels`
+  - assign per-cluster and per-cell parent labels
+
+### Subcluster Workers
+
 - `subcluster_find_markers`
+  - subset a chosen parent celltype and compute subcluster markers
 - `subcluster_annotate_ontology`
+  - ontology-constrained subcluster annotation
 - `subcluster_annotate_inheritance`
+  - parent-marker-inheritance subtype annotation
 - `finalize_subcluster_annotations`
+  - write final subcluster outputs to `work/<project>/annotate_subclusters`
 
-These write their own JSON outputs under:
+### RAG Check Workers
 
-- `runs/<run_id>/specs/gptanno-tool-*.outputs.json`
+- `build_review_packets`
+  - package current parent outputs into one review unit per cluster
+- `decide_rag_check`
+  - wrapped controller decision worker
+  - decides which clusters can be finalized versus compared or reviewed
+- `build_candidate_map`
+  - wrapped ontology-relations worker
+  - builds candidate maps under ontology and granularity constraints
+- `retrieve_rag_evidence`
+  - wrapped evidence retrieval layer
+  - currently still embedded inside ontology-relations
+- `run_llm_compare`
+  - run the LLM judge over prepared candidates
+- `human_review`
+  - collect saved or direct user decisions for unresolved clusters
 
-## Policy
+### Output Workers
 
-The main pipeline is unchanged. Policy is applied only after the first-pass parent
-annotation, inside `ontology-relations`, where it shapes the ontology candidate
-neighborhood that will later be compared by `llm-compare`.
+- `export_reviewed_parent_annotations`
+  - write reviewed per-cell metadata, reviewed Seurat object, and cluster decisions
+- `generate_report`
+  - generate final report assets and deliverable report file
 
-```yaml
-policy:
-  ontology: true
-  granularity: balanced
-  fallback: up
-  review_tie: true
-  review_nomatch: true
+## Memory and Session Files
+
+Project-local state lives under `work/<project>/`.
+
+Important files:
+
+- `work/<project>/agent_memory.json`
+  - stored external evidence, subcluster requests, resolution feedback
+- `work/<project>/agent_session.json`
+  - persistent natural-language session state
+- `work/<project>/agent_ui_history.json`
+  - Streamlit UI chat history rendering state
+
+## Artifacts and Output Layout
+
+Durable project artifacts:
+
+- `work/<project>/annotate_parent`
+- `work/<project>/annotate_subclusters`
+
+Run-local artifacts:
+
+- `runs/<run_id>/manifest.json`
+- `runs/<run_id>/review_packets`
+- `runs/<run_id>/ontology_relations`
+- `runs/<run_id>/llm_compare`
+- `runs/<run_id>/controller`
+- `runs/<run_id>/reviewed_parent`
+- `runs/<run_id>/report.html` or `report.pdf`
+- `runs/<run_id>/report_assets/figures`
+
+## Typical Workflows
+
+### Full parent run
+
+```bash
+python3 ontoanno ask --config configs/pdac_sn.yaml --message "Run the parent pipeline"
 ```
 
-Current `granularity` semantics in `ontology-relations`:
+### RAG review after annotation
 
-- `coarse`: compare `parent + self`
-- `balanced`: compare surfaced ontology candidates; if only one mapped candidate is present, expand to `self + sibling`
-- `fine`: compare `self + child`
+```bash
+python3 ontoanno ask --config configs/pdac_sn.yaml --message "Run the RAG check"
+```
 
-## Review Packets
+### Change specificity and review again
 
-`review-packets` is a read-only helper for later decision modules. It scans the
-existing parent annotation outputs and writes one packet per parent cluster from
-the best parent resolution:
+```bash
+python3 ontoanno ask --config configs/pdac_sn.yaml --message "The labels are too coarse. Make them more specific."
+python3 ontoanno ask --config configs/pdac_sn.yaml --message "Run the RAG check again."
+```
 
-- `runs/<run_id>/review_packets/summary.csv`
-- `runs/<run_id>/review_packets/index.json`
-- `runs/<run_id>/review_packets/packets/*.json`
+### Run subclustering for a parent cell type
 
-`index.json` stores the shared parent context:
+```bash
+python3 ontoanno ask --config configs/pdac_sn.yaml --message "I want to look deeper into macrophages."
+```
 
-- policy
-- best parent resolution
-- shared artifact paths
-- global resolution score summary
+### Add explicit evidence
 
-Each cluster packet is lightweight and only keeps cluster-specific review data:
+```bash
+python3 ontoanno ask --config configs/pdac_sn.yaml --message "Add external evidence for pericyte: RGS5, CSPG4, MCAM."
+```
 
-- assigned parent label
-- cluster size / agreement summary
-- top markers
-- review flags
+### Generate the final report
 
-## Ontology Relations
+```bash
+python3 ontoanno ask --config configs/pdac_sn.yaml --message "Generate report."
+```
 
-`ontology-relations` is the ontology-local comparison layer. It reads the parent
-review packets, maps the current label and competing labels to CL terms, applies
-the active policy to construct `focus_candidates`, and exports:
+## Developer CLI
 
-- a compact candidate mapping summary
-- a filtered `consensus_ancestor`
-- `policy_granularity`
-- `focus_strategy`
-- `needs_llm_compare`
-- a short `llm_question` for later LLM judging
-- when a local PanglaoDB file is present under `resources/reference_db/`, a reference-backed prompt with marker overlaps
+The commands below are still supported, but they are primarily for development, debugging, and recovery rather than normal end-user operation.
 
-The current implementation filters out overly broad common ancestors such as very
-high-level ontology nodes before selecting a `consensus_ancestor`.
+### Main Commands
 
-When reference databases are available, AnnoAgent filters them by dataset species.
-Set `annotation.species` to `mouse` or `human` in config to make this explicit.
-If the current dataset species has no supported reference entries, reference
-evidence mode is disabled automatically and the report will warn you.
+```bash
+python3 ontoanno validate --config configs/pdac_sn.yaml
+python3 ontoanno run --config configs/pdac_sn.yaml
+python3 ontoanno report --config configs/pdac_sn.yaml --force
+python3 ontoanno chat --config configs/pdac_sn.yaml
+python3 ontoanno ask --config configs/pdac_sn.yaml --message "Run the RAG check"
+```
 
-This is intended as the input to a later constrained LLM judge, not as a final
-automatic relabeling step.
+### Review and Analysis
 
-## LLM Compare
+```bash
+python3 ontoanno review-packets --config configs/pdac_sn.yaml --force
+python3 ontoanno ontology-relations --config configs/pdac_sn.yaml --force
+python3 ontoanno llm-compare --config configs/pdac_sn.yaml --force
+python3 ontoanno controller --config configs/pdac_sn.yaml --phase post_compare --force
+python3 ontoanno agent --config configs/pdac_sn.yaml --force
+```
 
-`llm-compare` reads the prompts prepared by `ontology-relations` and runs an
-ontology-constrained, reference-assisted comparison only for clusters with
-`prompt_ready = true`.
+### Decomposed Backbone Workers
 
-It does not modify annotation results. It writes:
+```bash
+python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool preprocess_parent
+python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool cluster_parent_markers
+python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool annotate_parent_raw
+python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool map_parent_ontology
+python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool select_parent_resolution
+python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool assign_parent_labels
+```
 
-- `runs/<run_id>/llm_compare/summary.csv`
-- `runs/<run_id>/llm_compare/index.json`
-- `runs/<run_id>/llm_compare/results/*.json`
+### Worker Introspection
 
-Each result stores:
+```bash
+python3 ontoanno workers --config configs/pdac_sn.yaml
+python3 ontoanno worker-run --config configs/pdac_sn.yaml --worker build_review_packets
+python3 ontoanno worker-run --config configs/pdac_sn.yaml --worker decide_rag_check --phase initial
+```
 
-- the final compare prompt
-- the raw model response
-- a normalized structured decision
-- `best_candidate` or `review`
+## Notes
 
-## Agent Review
-
-`agent` is the recommended parent-level refinement entry point. It first ensures
-the initial parent annotation exists through `annotate_parent`, then hands
-control to the cluster-level controller for the parent refinement steps.
-
-It will:
-
-- prompt for `policy.granularity`
-- build or reuse `review-packets`
-- initialize the controller right after parent annotation
-- dispatch `ontology-relations` only for clusters whose next action is `build_ontology_relations`
-- dispatch `llm-compare` only for clusters whose next action is `run_llm_compare`
-- rebuild controller state after each worker phase
-- stop only on true `review` / failed compare cases and ask the user to pick a final label
-- export final per-cell parent annotations
-
-The final reviewed outputs are written to:
-
-- `runs/<run_id>/reviewed_parent/metadata_parent_reviewed.csv`
-- `runs/<run_id>/reviewed_parent/seurat_parent_reviewed.rds`
-- `runs/<run_id>/reviewed_parent/cluster_decisions.csv`
-
-Clusters with `No ontology comparison needed` are skipped automatically to save
-tokens.
-
-## Layout
-
-- `GPTAnno/`: vendored annotation engine and PDF2markers pipeline
-- `src/annoagent/`: Python CLI and orchestration layer
-- `scripts/`: thin R wrappers used by the orchestrator
-- `configs/`: YAML configs
-- `work/`: dataset-scoped artifacts
-- `runs/`: run-scoped state and reports
+- The authoritative human-readable router/controller/worker registry is [resources/agent_registry.yaml](/proj/bzou_lab/projects/OntoAnno/resources/agent_registry.yaml).
+- LangGraph visualization helpers remain in:
+  - [src/ontoanno/agent_graph.py](/proj/bzou_lab/projects/OntoAnno/src/ontoanno/agent_graph.py)
+  - [src/ontoanno/agent_graph_visual.py](/proj/bzou_lab/projects/OntoAnno/src/ontoanno/agent_graph_visual.py)
+  - [langgraph.json](/proj/bzou_lab/projects/OntoAnno/langgraph.json)
+- `extract_external_evidence` is intentionally registered before its worker chain exists. That is by design, not drift.

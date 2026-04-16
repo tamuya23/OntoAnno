@@ -28,6 +28,22 @@ top_level_intents:
       - "worker outputs under runs/<run_id>/specs/gptanno-tool-*.outputs.json"
     status: "connected"
 
+  run_report:
+    user_facing: true
+    description: "Generate the final report from the currently available project artifacts."
+    controller_action: "run_report"
+    parameters:
+      reason:
+        type: string
+        required: true
+    current_execution:
+      mode: single_worker
+      workers:
+        - generate_report
+    outputs:
+      - "updated report artifacts under runs/<run_id>/report* and report_assets/"
+    status: "connected"
+
   run_RAG_check:
     user_facing: true
     description: "Run the current RAG-based check and review pipeline on available annotations."

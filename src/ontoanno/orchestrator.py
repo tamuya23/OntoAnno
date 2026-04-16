@@ -36,9 +36,10 @@ class Orchestrator:
         self.active_stages = list(STAGES)
         self.state = self._load_state()
         self.manifest = self._load_manifest()
+        self._hydrate_manifest_outputs_from_disk()
 
     def _emit(self, message: str) -> None:
-        print(f"[AnnoAgent] {message}", flush=True)
+        print(f"[OntoAnno] {message}", flush=True)
 
     def _ensure_active_run(self) -> tuple[str, Path]:
         if self.pointer_path.exists():
@@ -92,6 +93,46 @@ class Orchestrator:
     def _save_manifest(self) -> None:
         self.manifest["updated_at"] = utc_now()
         dump_json(self.manifest_path, self.manifest)
+
+    def _stage_outputs_path(self, stage: str) -> Path | None:
+        stage_output_files = {
+            "review_packets": self.run_dir / "review_packets" / "parent_review_packets.outputs.json",
+            "ontology_relations": self.run_dir / "ontology_relations" / "ontology_relations.outputs.json",
+            "llm_compare": self.run_dir / "llm_compare" / "llm_compare.outputs.json",
+            "controller": self.run_dir / "controller" / "controller.outputs.json",
+            "reviewed_parent": self.run_dir / "reviewed_parent" / "reviewed_parent.outputs.json",
+        }
+        return stage_output_files.get(stage)
+
+    def _load_stage_outputs_from_disk(self, stage: str) -> dict[str, Any] | None:
+        outputs_path = self._stage_outputs_path(stage)
+        if outputs_path is None or not outputs_path.exists():
+            return None
+        try:
+            payload = load_json(outputs_path)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _hydrate_manifest_outputs_from_disk(self) -> bool:
+        outputs = self.manifest.setdefault("outputs", {})
+        if not isinstance(outputs, dict):
+            outputs = {}
+            self.manifest["outputs"] = outputs
+
+        updated = False
+        for stage in ("review_packets", "ontology_relations", "llm_compare", "controller", "reviewed_parent"):
+            current = outputs.get(stage)
+            if isinstance(current, dict) and current:
+                continue
+            disk_outputs = self._load_stage_outputs_from_disk(stage)
+            if isinstance(disk_outputs, dict) and disk_outputs:
+                outputs[stage] = disk_outputs
+                updated = True
+
+        if updated:
+            self._save_manifest()
+        return updated
 
     def _record_stage_outputs(self, stage: str, outputs: dict[str, Any]) -> None:
         self.state["stages"][stage]["outputs"] = outputs
@@ -436,6 +477,7 @@ class Orchestrator:
         report_format = str(self.config.get("report", {}).get("format") or "html").lower()
         suffix = ".pdf" if report_format == "pdf" else ".html"
         report_path = self.run_dir / f"report{suffix}"
+        self._hydrate_manifest_outputs_from_disk()
         generate_report(self.config, self.state, self.manifest, report_path)
         outputs = {
             "report_path": str(report_path),

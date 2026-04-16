@@ -58,7 +58,7 @@ def _require(config: dict[str, Any], dotted_key: str) -> Any:
 
 
 def _resolve_rscript() -> str:
-    explicit = os.getenv("ANNOAGENT_RSCRIPT")
+    explicit = os.getenv("ONTOANNO_RSCRIPT")
     if explicit:
         return explicit
     discovered = shutil.which("Rscript")
@@ -122,7 +122,10 @@ def load_config(config_path: str | Path, repo_root: Path) -> dict[str, Any]:
         "gptanno_tool_runner": str((repo_root / "scripts" / "run_gptanno_tool.R").resolve()),
         "evaluation_runner": str((repo_root / "scripts" / "run_evaluation.R").resolve()),
         "review_packet_runner": str((repo_root / "scripts" / "export_parent_review_packets.R").resolve()),
-        "ontology_obo": _resolve_path(os.getenv("ANNOAGENT_CL_OBO"), base_dir=base_dir),
+        "ontology_obo": _resolve_path(
+            os.getenv("ONTOANNO_CL_OBO"),
+            base_dir=base_dir,
+        ),
         "rscript": _resolve_rscript(),
         "python": shutil.which("python3") or shutil.which("python") or "python3",
     }
@@ -242,7 +245,7 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
     ontology_obo = config["_runtime"].get("ontology_obo")
     if ontology_obo and not Path(ontology_obo).exists():
         errors.append(
-            f"ANNOAGENT_CL_OBO points to a missing file: {ontology_obo}"
+            f"ONTOANNO_CL_OBO points to a missing file: {ontology_obo}"
         )
 
     if needs_annotation or needs_evaluation:
@@ -250,7 +253,7 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
         if not rscript:
             errors.append(
                 f"Rscript executable not found: {config['_runtime']['rscript']}. "
-                "Set ANNOAGENT_RSCRIPT or load R into PATH."
+                "Set ONTOANNO_RSCRIPT or load R into PATH."
             )
 
     if needs_annotation:

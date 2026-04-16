@@ -14,6 +14,7 @@ from .worker_runtime import (
     PARENT_BACKBONE_WORKERS,
     SUBCLUSTER_WORKERS,
     has_parent_annotation_outputs,
+    run_generate_report_worker,
     run_gptanno_worker_chain,
     run_rag_check_workers,
 )
@@ -107,6 +108,7 @@ def _extract_celltype(text: str) -> str | None:
         r"(?:interested in|focus on|look at)\s+([A-Za-z][A-Za-z0-9 _/\-]+?)(?:\s|[:,.;]|$)",
         r"(?:look deeper into|drill down into|look inside)\s+([A-Za-z][A-Za-z0-9 _/\-]+?)(?:\s|[:,.;]|$)",
         r"(?:for|about|target|针对|对于|对)\s+([A-Za-z][A-Za-z0-9 _/\-]+?)(?:\s+with|\s*[:,.;]|$)",
+        r"(?:to)\s+([A-Za-z][A-Za-z0-9 _/\-]+?)(?:\s+with|\s*[:,.;]|$)",
         r"(?:celltype|cell type|细胞类型)\s+([A-Za-z][A-Za-z0-9 _/\-]+?)(?:\s+with|\s*[:,.;]|$)",
         r"(?:subcluster|sub cluster)\s+([A-Za-z][A-Za-z0-9 _/\-]+?)(?:\s|$)",
         r"(?:感兴趣|关注)\s*([A-Za-z][A-Za-z0-9 _/\-]+?)(?:\s|$)",
@@ -202,9 +204,12 @@ def _resolve_external_evidence_celltype(
     explicit = _extract_celltype(raw_text)
     if explicit:
         return explicit
+    requested = (requested_celltype or "").strip()
+    if requested:
+        return requested
     if context_celltype and _has_anaphora_reference(raw_text):
         return context_celltype.strip() or None
-    return (requested_celltype or "").strip() or None
+    return None
 
 
 def parse_agent_request(text: str) -> dict[str, Any]:
@@ -430,6 +435,22 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
                 ),
                 "next_step": "human_review" if ask_user_count > 0 else "export_reviewed_parent_annotations",
                 "executed_workers": executed,
+            }
+        )
+        return result
+
+    if intent_type == "run_report":
+        if orchestrator is None:
+            result["message"] = "run_report requires an active orchestrator."
+            return result
+        outputs, worker_result = run_generate_report_worker(orchestrator, force=True)
+        result.update(
+            {
+                "applied": True,
+                "message": "Generated the final report from current project artifacts.",
+                "next_step": "",
+                "executed_workers": [worker_result],
+                "report_outputs": outputs,
             }
         )
         return result

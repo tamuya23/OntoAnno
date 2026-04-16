@@ -58,7 +58,7 @@ resolve_ontology_path <- function(spec) {
     "Failed to obtain Cell Ontology OBO.",
     sprintf("Tried download from %s.", spec$ontology_url),
     if (!is.null(download_error)) sprintf("Download error: %s.", download_error) else character(0),
-    "Set ANNOAGENT_CL_OBO to a local cl.obo file or place one at the cache path.",
+    "Set ONTOANNO_CL_OBO to a local cl.obo file or place one at the cache path.",
     sprintf("Cache path: %s", cache_path)
   )
   stop(paste(message_parts, collapse = " "))

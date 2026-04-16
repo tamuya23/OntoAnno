@@ -61,7 +61,7 @@ If multiple people are working in the same checkout:
 If two people need the same dataset but different settings, create two config
 files with different project names rather than reusing one config.
 
-## Practical Recommendation For AnnoAgent
+## Practical Recommendation For OntoAnno
 
 For heavy datasets, keep these separate:
 

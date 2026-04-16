@@ -11,6 +11,11 @@ MAX_SESSION_MESSAGES = 16
 
 def session_path(config: dict[str, Any]) -> Path:
     work_dir = Path(str(config["project"]["work_dir"]))
+    return work_dir / "ontoanno_session.json"
+
+
+def _legacy_session_path(config: dict[str, Any]) -> Path:
+    work_dir = Path(str(config["project"]["work_dir"]))
     return work_dir / "agent_session.json"
 
 
@@ -34,6 +39,9 @@ def _default_session(config: dict[str, Any]) -> dict[str, Any]:
 
 def load_agent_session(config: dict[str, Any]) -> dict[str, Any]:
     path = session_path(config)
+    legacy_path = _legacy_session_path(config)
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if not path.exists():
         return _default_session(config)
     payload = load_json(path)

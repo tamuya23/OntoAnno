@@ -1,7 +1,11 @@
 runs/
 work/
 backups/
+.cache/
 __pycache__/
+**/__pycache__/
+*.egg-info/
+src/*.egg-info/
 *.pyc
 *.pyo
 .DS_Store

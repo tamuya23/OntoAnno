@@ -13,18 +13,19 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from annoagent.agent_memory import load_agent_memory
-from annoagent.agent_router import route_agent_request
-from annoagent.agent_session import reset_agent_session, session_path
-from annoagent.config import load_config
-from annoagent.orchestrator import Orchestrator
-from annoagent.utils import dump_json, load_json
-from annoagent.worker_runtime import AVAILABLE_WORKERS, run_named_worker
+from ontoanno.agent_memory import load_agent_memory
+from ontoanno.agent_router import route_agent_request
+from ontoanno.agent_session import reset_agent_session, session_path
+from ontoanno.config import load_config
+from ontoanno.orchestrator import Orchestrator
+from ontoanno.utils import dump_json, load_json
+from ontoanno.worker_runtime import AVAILABLE_WORKERS, run_named_worker
 
 
 def _repo_root() -> Path:
@@ -32,14 +33,14 @@ def _repo_root() -> Path:
 
 
 def _config_path() -> Path:
-    value = os.getenv("ANNOAGENT_STREAMLIT_CONFIG")
+    value = os.getenv("ONTOANNO_STREAMLIT_CONFIG")
     if value:
         return Path(value).expanduser().resolve()
     return (_repo_root() / "configs" / "agingv2.yaml").resolve()
 
 
 def _default_reset_session() -> bool:
-    return os.getenv("ANNOAGENT_STREAMLIT_RESET_SESSION", "0") == "1"
+    return (os.getenv("ONTOANNO_STREAMLIT_RESET_SESSION") or "0") == "1"
 
 
 def _load_runtime(config_path: str) -> tuple[dict[str, Any], Orchestrator]:
@@ -98,11 +99,18 @@ def _project_state(config: dict[str, Any], orchestrator: Orchestrator) -> dict[s
 
 
 def _ui_history_path(config: dict[str, Any]) -> Path:
+    return Path(str(config["project"]["work_dir"])) / "ontoanno_ui_history.json"
+
+
+def _legacy_ui_history_path(config: dict[str, Any]) -> Path:
     return Path(str(config["project"]["work_dir"])) / "agent_ui_history.json"
 
 
 def _load_ui_history(config: dict[str, Any]) -> list[dict[str, Any]]:
     path = _ui_history_path(config)
+    legacy_path = _legacy_ui_history_path(config)
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if path.exists():
         payload = load_json(path)
         if isinstance(payload, dict) and isinstance(payload.get("messages"), list):
@@ -228,30 +236,47 @@ PHASE_WORKER_MAP: dict[str, list[str]] = {
 
 def _phase_completed(phase: str, orchestrator: Orchestrator) -> bool:
     outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
+    stages = orchestrator.state.get("stages", {}) if isinstance(orchestrator.state.get("stages"), dict) else {}
     if phase == "Cluster":
         gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
-        return bool(gptanno.get("cluster_parent_markers"))
+        preflight_done = str((stages.get("preflight") or {}).get("status") or "") == "completed"
+        return bool(gptanno.get("cluster_parent_markers")) or preflight_done
     if phase == "Annotate":
         annotate_parent = outputs.get("annotate_parent", {}) if isinstance(outputs.get("annotate_parent"), dict) else {}
         gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
-        return bool(annotate_parent) or bool(gptanno.get("assign_parent_labels"))
+        stage_done = str((stages.get("annotate_parent") or {}).get("status") or "") == "completed"
+        return bool(annotate_parent) or bool(gptanno.get("assign_parent_labels")) or stage_done
     if phase == "Subcluster":
         annotate_subclusters = outputs.get("annotate_subclusters", {}) if isinstance(outputs.get("annotate_subclusters"), dict) else {}
         gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
+        stage_done = str((stages.get("annotate_subclusters") or {}).get("status") or "") == "completed"
         subcluster_dir = orchestrator.work_dir / "annotate_subclusters"
         file_complete = any(
             (subcluster_dir / name).exists()
             for name in ["metadata_final.csv", "seurat_final_annotated.rds", "seurat_ontology_annotated.rds"]
         )
-        return bool(annotate_subclusters) or bool(gptanno.get("finalize_subcluster_annotations")) or file_complete
+        return bool(annotate_subclusters) or bool(gptanno.get("finalize_subcluster_annotations")) or file_complete or stage_done
     if phase == "RAG_Check":
-        return any(
+        output_complete = any(
             bool(outputs.get(key))
             for key in ["review_packets", "ontology_relations", "llm_compare", "controller", "reviewed_parent"]
         )
+        run_dir_complete = any(
+            (orchestrator.run_dir / rel_path).exists()
+            for rel_path in [
+                "review_packets/index.json",
+                "ontology_relations/index.json",
+                "llm_compare/index.json",
+                "controller/index.json",
+                "reviewed_parent/reviewed_parent.outputs.json",
+                "reviewed_parent/cluster_decisions.csv",
+            ]
+        )
+        return output_complete or run_dir_complete
     if phase == "Report":
         report = outputs.get("report", {}) if isinstance(outputs.get("report"), dict) else {}
-        return bool(report.get("report_html") or report.get("report_pdf") or report.get("report_path"))
+        stage_done = str((stages.get("report") or {}).get("status") or "") == "completed"
+        return bool(report.get("report_html") or report.get("report_pdf") or report.get("report_path")) or stage_done
     return False
 
 
@@ -261,10 +286,11 @@ def _render_stage_status(orchestrator: Orchestrator, *, is_running: bool) -> Non
     rows: list[dict[str, str]] = []
     for phase, workers in PHASE_WORKER_MAP.items():
         status = "pending"
-        if is_running and active_worker in workers:
-            status = "running"
-        elif _phase_completed(phase, orchestrator):
+        # Completion must be sticky; log recency should not downgrade completed phases.
+        if _phase_completed(phase, orchestrator):
             status = "completed"
+        elif is_running and active_worker in workers:
+            status = "running"
         elif phase == "Subcluster":
             status = "optional"
         rows.append(
@@ -320,7 +346,7 @@ def _artifact_line(label: str, value: str) -> None:
 
 def _read_csv_preview(path_str: str, limit: int = 12) -> list[dict[str, Any]]:
     path = Path(path_str)
-    if not path.exists():
+    if not path.exists() or not path.is_file():
         return []
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -334,7 +360,7 @@ def _read_csv_preview(path_str: str, limit: int = 12) -> list[dict[str, Any]]:
 
 def _csv_row_count(path_str: str) -> int | None:
     path = Path(path_str)
-    if not path.exists():
+    if not path.exists() or not path.is_file():
         return None
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         return max(sum(1 for _ in handle) - 1, 0)
@@ -360,7 +386,7 @@ def _render_pdf_embed(path: Path, *, height: int = 720) -> None:
 
 def _read_csv_rows(path_str: str) -> list[dict[str, Any]]:
     path = Path(path_str)
-    if not path.exists():
+    if not path.exists() or not path.is_file():
         return []
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         return list(csv.DictReader(handle))
@@ -434,6 +460,11 @@ def _parent_annotation_preview_png_path(orchestrator: Orchestrator, resolution: 
 def _subcluster_annotation_preview_root(orchestrator: Orchestrator, selected_root_name: str, selected_celltype: str, workflow_dir_name: str) -> Path:
     token = f"{selected_root_name}_{selected_celltype}_{workflow_dir_name}".replace("/", "_")
     return orchestrator.work_dir / "annotate_subclusters" / "ui_preview" / token
+
+
+def _reviewed_parent_preview_paths(orchestrator: Orchestrator) -> tuple[Path, Path]:
+    root = orchestrator.run_dir / "reviewed_parent" / "ui_preview"
+    return root / "reviewed_parent_preview.json", root / "reviewed_parent_preview.png"
 
 
 def _ensure_parent_annotation_preview(orchestrator: Orchestrator, resolution: str) -> tuple[Path | None, str | None]:
@@ -531,6 +562,52 @@ def _ensure_subcluster_annotation_preview(
     if not output_png.exists() or not output_csv.exists():
         return None, None, "Subcluster preview render finished but expected files were not created."
     return output_png, output_csv, None
+
+
+def _ensure_reviewed_parent_preview(
+    orchestrator: Orchestrator,
+    *,
+    reviewed_outputs: dict[str, Any],
+) -> tuple[Path | None, str | None]:
+    seurat_rds = Path(str(reviewed_outputs.get("seurat_rds") or ""))
+    cluster_col = str(reviewed_outputs.get("cluster_col") or "").strip()
+    label_col = str(reviewed_outputs.get("label_col") or "").strip()
+    spec_path, output_png = _reviewed_parent_preview_paths(orchestrator)
+
+    if not seurat_rds.exists() or not cluster_col or not label_col:
+        return None, "Reviewed parent preview inputs are missing."
+
+    newest_source = seurat_rds.stat().st_mtime
+    if output_png.exists() and output_png.stat().st_mtime >= newest_source:
+        return output_png, None
+
+    dump_json(
+        spec_path,
+        {
+            "gptanno_path": str(orchestrator.config["_runtime"]["gptanno_path"]),
+            "seurat_rds": str(seurat_rds),
+            "cluster_col": cluster_col,
+            "label_col": label_col,
+            "output_png": str(output_png),
+        },
+    )
+    command = [
+        str(orchestrator.config["_runtime"]["rscript"]),
+        str(orchestrator.repo_root / "scripts" / "render_reviewed_parent_preview.R"),
+        str(spec_path),
+    ]
+    process = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    if process.returncode != 0:
+        return None, process.stdout.strip() or f"Reviewed parent preview render failed with exit code {process.returncode}."
+    if not output_png.exists():
+        return None, "Reviewed parent preview render finished but no PNG was created."
+    return output_png, None
 
 
 def _render_parent_annotation_tab(orchestrator: Orchestrator) -> None:
@@ -809,6 +886,16 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
     elif controller_summary:
         _render_preview_table("Controller summary", controller_summary, limit=12)
 
+    reviewed_preview_png, reviewed_preview_error = _ensure_reviewed_parent_preview(
+        orchestrator,
+        reviewed_outputs=reviewed,
+    ) if reviewed else (None, None)
+    if reviewed_preview_png is not None:
+        st.markdown("**Reviewed annotation figure**")
+        st.image(str(reviewed_preview_png), caption="Reviewed parent annotation preview")
+    elif reviewed_preview_error and reviewed:
+        st.info(reviewed_preview_error)
+
     if review_packets_summary:
         _render_preview_table("Review packet summary", review_packets_summary, limit=10)
     if ontology_summary:
@@ -819,6 +906,8 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
         _render_preview_table("Reviewed parent metadata", reviewed_csv, limit=10)
 
     with st.expander("Raw RAG review files"):
+        if reviewed_preview_png is not None:
+            _artifact_line("Reviewed preview PNG", str(reviewed_preview_png))
         _artifact_line("Reviewed metadata CSV", reviewed_csv)
         _artifact_line("Cluster decisions CSV", reviewed_decisions)
         _artifact_line("Review packets summary CSV", review_packets_summary)
@@ -843,12 +932,20 @@ def _render_report_tab(orchestrator: Orchestrator) -> None:
     with col2:
         st.metric("Figures", len(figures))
 
-    if figures:
+    report_html_path = Path(report_html) if report_html else None
+    report_pdf_path = Path(report_pdf) if report_pdf else None
+
+    if report_html_path and report_html_path.exists() and report_html_path.is_file():
+        st.markdown("**Report preview**")
+        components.html(report_html_path.read_text(encoding="utf-8", errors="replace"), height=900, scrolling=True)
+    elif report_pdf_path and report_pdf_path.exists() and report_pdf_path.is_file():
+        st.markdown("**Report preview**")
+        _render_pdf_embed(report_pdf_path, height=900)
+    elif figures:
         selected = st.selectbox("Report figure", [path.name for path in figures], index=0, key="artifacts_report_figure")
         selected_path = next((path for path in figures if path.name == selected), None)
         if selected_path is not None:
             st.image(str(selected_path), caption=selected_path.name)
-            st.code(str(selected_path), language="bash")
 
     with st.expander("Raw report files"):
         _artifact_line("HTML report", report_html)
@@ -1029,11 +1126,11 @@ def _run_worker(orchestrator: Orchestrator, worker: str, *, force: bool, phase: 
 
 
 def main() -> None:
-    st.set_page_config(page_title="AnnoAgent Workbench", layout="wide")
+    st.set_page_config(page_title="OntoAnno Workbench", layout="wide")
     config, orchestrator = _refresh_runtime()
-    if _default_reset_session() and not st.session_state.get("_annoagent_ui_session_reset_done"):
+    if _default_reset_session() and not st.session_state.get("_ontoanno_ui_session_reset_done"):
         reset_agent_session(config)
-        st.session_state["_annoagent_ui_session_reset_done"] = True
+        st.session_state["_ontoanno_ui_session_reset_done"] = True
 
     if "ui_pending_prompt" not in st.session_state:
         st.session_state["ui_pending_prompt"] = None
@@ -1044,8 +1141,8 @@ def main() -> None:
 
     state = _project_state(config, orchestrator)
 
-    st.title("AnnoAgent Workbench")
-    st.caption("Local Streamlit front-end for AnnoAgent. Python orchestrates; R workers still run locally through Rscript.")
+    st.title("OntoAnno Workbench")
+    st.caption("Local Streamlit front-end for OntoAnno. Python orchestrates; R workers still run locally through Rscript.")
 
     with st.sidebar:
         st.subheader("Project")
@@ -1142,7 +1239,7 @@ def main() -> None:
             else:
                 st.info("No log files found yet.")
 
-    prompt = st.chat_input("Ask AnnoAgent to run, review, explain, or show current state")
+    prompt = st.chat_input("Ask OntoAnno to run, review, explain, or show current state")
     if prompt:
         st.session_state["ui_pending_prompt"] = prompt
         st.rerun()

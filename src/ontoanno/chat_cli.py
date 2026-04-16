@@ -7,7 +7,7 @@ from .agent_session import reset_agent_session, session_path
 
 
 def _chat_print(message: str) -> None:
-    print(f"[AnnoAgent] {message}", flush=True)
+    print(f"[OntoAnno] {message}", flush=True)
 
 
 def _render_router_result(result: dict[str, Any]) -> None:

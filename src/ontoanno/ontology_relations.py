@@ -1037,7 +1037,7 @@ def build_ontology_relations(
         )
         temp_relations_dir = Path(temp_outputs["relations_dir"])
         for relation_path in temp_relations_dir.glob("cluster-*.json"):
-            shutil.copy2(relation_path, relations_dir / relation_path.name)
+            shutil.copyfile(relation_path, relations_dir / relation_path.name)
     else:
         temp_output_dir = ensure_dir(output_dir / "_full")
         temp_outputs = _run_ontology_helper(
@@ -1052,11 +1052,11 @@ def build_ontology_relations(
             existing.unlink()
         temp_relations_dir = Path(temp_outputs["relations_dir"])
         for relation_path in temp_relations_dir.glob("cluster-*.json"):
-            shutil.copy2(relation_path, relations_dir / relation_path.name)
+            shutil.copyfile(relation_path, relations_dir / relation_path.name)
         cache_source = temp_output_dir / "cache" / "cl.obo"
         if cache_source.exists():
             ensure_dir(output_dir / "cache")
-            shutil.copy2(cache_source, output_dir / "cache" / "cl.obo")
+            shutil.copyfile(cache_source, output_dir / "cache" / "cl.obo")
 
     outputs = _rebuild_ontology_outputs(
         config=config,

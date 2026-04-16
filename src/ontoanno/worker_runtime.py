@@ -47,7 +47,21 @@ AVAILABLE_WORKERS = [
 def has_parent_annotation_outputs(orchestrator: Any) -> bool:
     outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
     annotate_parent = outputs.get("annotate_parent", {})
-    return isinstance(annotate_parent, dict) and bool(annotate_parent)
+    if isinstance(annotate_parent, dict) and bool(annotate_parent):
+        return True
+
+    gptanno_tools = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
+    assign_parent = gptanno_tools.get("assign_parent_labels", {})
+    if isinstance(assign_parent, dict) and bool(assign_parent):
+        return True
+
+    parent_dir = orchestrator.work_dir / "annotate_parent"
+    required_files = [
+        parent_dir / "annotation_summary_scores.csv",
+        parent_dir / "parent_ontology_mapping.csv",
+        parent_dir / "seurat_parent_annotated.rds",
+    ]
+    return all(path.exists() for path in required_files)
 
 
 def _compact_outputs(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -275,7 +289,7 @@ def run_human_review_worker(
                 notes = [f"Loaded {decision_count} saved human-review decision(s)."]
             else:
                 notes.append(
-                    "No saved human-review decision file exists yet; use `annoagent agent` or chat/apply flow to collect decisions."
+                    "No saved human-review decision file exists yet; use `ontoanno agent` or chat/apply flow to collect decisions."
                 )
     else:
         notes = ["No unresolved clusters require human review."]
@@ -415,7 +429,7 @@ def run_export_reviewed_parent_worker(orchestrator: Any) -> tuple[dict[str, Any]
             status="blocked",
             notes=[
                 "Reviewed parent export requires saved human-review decisions.",
-                "Collect decisions first through `annoagent agent` or an interactive human-review flow.",
+                "Collect decisions first through `ontoanno agent` or an interactive human-review flow.",
             ],
         )
     decisions = load_json(decisions_path)
@@ -432,6 +446,18 @@ def run_export_reviewed_parent_worker(orchestrator: Any) -> tuple[dict[str, Any]
 
 
 def run_generate_report_worker(orchestrator: Any, *, force: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
+    manifest_outputs = orchestrator.manifest.get("outputs", {})
+    reviewed_outputs = (
+        manifest_outputs.get("reviewed_parent", {})
+        if isinstance(manifest_outputs.get("reviewed_parent"), dict)
+        else {}
+    )
+    if not reviewed_outputs.get("seurat_rds"):
+        decisions_path, _ = _interactive_decisions_paths(orchestrator.run_dir)
+        review_packets_index = orchestrator.run_dir / "review_packets" / "index.json"
+        if decisions_path.exists() and review_packets_index.exists():
+            run_export_reviewed_parent_worker(orchestrator)
+
     run_dir = orchestrator.run(from_stage="report", to_stage="report", force=force)
     outputs = orchestrator.manifest.get("outputs", {}).get("report", {})
     outputs = {"run_dir": str(run_dir), **(outputs if isinstance(outputs, dict) else {})}

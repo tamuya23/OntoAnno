@@ -10,7 +10,13 @@ from typing import Any
 
 from .agent_memory import load_agent_memory
 from .agent_requests import _extract_celltype, apply_agent_request
-from .agent_session import load_agent_session, reset_agent_session, save_agent_session, update_session_state_from_tool
+from .agent_session import (
+    load_agent_session,
+    reset_agent_session,
+    save_agent_session,
+    session_path,
+    update_session_state_from_tool,
+)
 from .utils import load_json
 
 
@@ -36,7 +42,7 @@ def _chat_completions_url(config: dict[str, Any]) -> str:
 
 def _router_system_prompt() -> str:
     return (
-        "You are the natural-language controller for AnnoAgent. "
+        "You are the natural-language controller for OntoAnno. "
         "Your job is to interpret the user's request and choose the most appropriate tool call. "
         "Do not ask the user to manually rewrite config values if a tool can handle it. "
         "Use tools only when the user is asking to change project state, run analysis, or execute a workflow step. "
@@ -104,6 +110,21 @@ def _tool_schemas() -> list[dict[str, Any]]:
                         "reason": {"type": "string"},
                     },
                     "required": ["celltype", "reason"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_report",
+                "description": "Generate the final report from currently available artifacts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["reason"],
                     "additionalProperties": False,
                 },
             },
@@ -324,7 +345,7 @@ def _compact_session_messages(messages: list[dict[str, Any]]) -> list[dict[str, 
         text = content.strip()
         if not text:
             continue
-        if role == "user" and text.startswith("Current AnnoAgent state:") and "\n\nUser request:\n" in text:
+        if role == "user" and text.startswith("Current OntoAnno state:") and "\n\nUser request:\n" in text:
             text = text.split("\n\nUser request:\n", 1)[1].strip()
         compacted.append({"role": role, "content": text})
     return compacted
@@ -337,11 +358,15 @@ def _has_anaphora_reference(text: str) -> bool:
 def _resolve_external_evidence_target(
     *,
     user_request: str,
+    requested_celltype: str | None,
     session: dict[str, Any],
 ) -> str | None:
     explicit = _extract_celltype(user_request)
     if explicit:
         return explicit
+    requested = (requested_celltype or "").strip()
+    if requested:
+        return requested
     state = session.get("state", {}) if isinstance(session.get("state"), dict) else {}
     focus = str(state.get("active_focus_celltype") or "").strip()
     if focus and _has_anaphora_reference(user_request):
@@ -411,6 +436,11 @@ def _intent_from_tool(
             "intent_type": "run_RAG_check",
             "raw_text": user_request,
         }
+    if tool_name == "run_report":
+        return {
+            "intent_type": "run_report",
+            "raw_text": user_request,
+        }
     if tool_name == "change_annotation_preference":
         return {
             "intent_type": "change_annotation_preference",
@@ -459,7 +489,7 @@ def route_agent_request(
     current_user_message = {"role": "user", "content": user_message.strip()}
     state_message = {
         "role": "user",
-        "content": "Current AnnoAgent state:\n" + _state_summary(config, orchestrator),
+        "content": "Current OntoAnno state:\n" + _state_summary(config, orchestrator),
     }
     conversation_messages: list[dict[str, Any]] = [*session_messages, current_user_message]
 
@@ -486,7 +516,7 @@ def route_agent_request(
             "assistant_message": gate_text,
             "tool_calls": executed_tools,
             "raw_responses": raw_responses,
-            "session_path": str(Path(str(config["project"]["work_dir"])) / "agent_session.json"),
+            "session_path": str(session_path(config)),
         }
 
     request_messages = [{"role": "system", "content": _router_system_prompt()}, state_message, *conversation_messages]
@@ -511,7 +541,7 @@ def route_agent_request(
             "assistant_message": assistant_text,
             "tool_calls": executed_tools,
             "raw_responses": raw_responses,
-            "session_path": str(Path(str(config["project"]["work_dir"])) / "agent_session.json"),
+            "session_path": str(session_path(config)),
         }
 
     conversation_messages.append(
@@ -540,6 +570,7 @@ def route_agent_request(
         if intent.get("intent_type") == "add_external_evidence":
             resolved_celltype = _resolve_external_evidence_target(
                 user_request=user_message.strip(),
+                requested_celltype=str(arguments.get("celltype") or "").strip(),
                 session=session,
             )
             if not resolved_celltype:
@@ -639,5 +670,5 @@ def route_agent_request(
         "tool_calls": executed_tools,
         "suggested_next_tools": suggested_next_tools,
         "raw_responses": raw_responses,
-        "session_path": str(Path(str(config["project"]["work_dir"])) / "agent_session.json"),
+        "session_path": str(session_path(config)),
     }

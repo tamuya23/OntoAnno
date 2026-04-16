@@ -1,6 +1,6 @@
 project:
   name: PDAC_sn
-  work_dir: /proj/bzou_lab/projects/AnnoAgent/work/PDAC_sn
+  work_dir: /proj/bzou_lab/projects/OntoAnno_Publish/work/PDAC_sn
 inputs:
   seurat_rds: /proj/bzou_lab/projects/GPTAnno_Experiment/PDAC_sn/PDAC_sn.rds
   manual_labels_csv: /proj/bzou_lab/projects/GPTAnno_Experiment/PDAC_sn/PDAC_singleR_annotation.csv

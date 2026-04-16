@@ -227,7 +227,7 @@ graph = build_langgraph() if StateGraph is not None else None
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Expose the current AnnoAgent architecture as an explicit LangGraph-style graph.")
+    parser = argparse.ArgumentParser(description="Expose the current OntoAnno architecture as an explicit LangGraph-style graph.")
     parser.add_argument(
         "--json",
         action="store_true",

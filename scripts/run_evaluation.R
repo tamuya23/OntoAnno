@@ -61,15 +61,15 @@ attach_manual_labels <- function(seurat_obj, csv_path, manual_col) {
 
   if (!is.null(join_key)) {
     meta <- seurat_obj@meta.data
-    meta$cell_id_tmp_annoagent <- rownames(meta)
+    meta$cell_id_tmp_ontoanno <- rownames(meta)
     df[[join_key]] <- as.character(df[[join_key]])
     meta <- dplyr::left_join(
       meta,
       df[, c(join_key, manual_col), drop = FALSE],
-      by = stats::setNames(join_key, "cell_id_tmp_annoagent")
+      by = stats::setNames(join_key, "cell_id_tmp_ontoanno")
     )
-    rownames(meta) <- meta$cell_id_tmp_annoagent
-    meta$cell_id_tmp_annoagent <- NULL
+    rownames(meta) <- meta$cell_id_tmp_ontoanno
+    meta$cell_id_tmp_ontoanno <- NULL
     seurat_obj@meta.data <- meta
   } else if (nrow(df) == nrow(seurat_obj@meta.data)) {
     seurat_obj@meta.data[[manual_col]] <- df[[manual_col]]
@@ -100,15 +100,15 @@ attach_baseline <- function(seurat_obj, baseline_result) {
 
   if (!is.null(join_key) && join_key %in% colnames(df)) {
     meta <- seurat_obj@meta.data
-    meta$cell_id_tmp_annoagent <- rownames(meta)
+    meta$cell_id_tmp_ontoanno <- rownames(meta)
     df[[join_key]] <- as.character(df[[join_key]])
     merged <- dplyr::left_join(
       meta,
       df[, c(join_key, prediction_column), drop = FALSE],
-      by = stats::setNames(join_key, "cell_id_tmp_annoagent")
+      by = stats::setNames(join_key, "cell_id_tmp_ontoanno")
     )
-    rownames(merged) <- merged$cell_id_tmp_annoagent
-    merged$cell_id_tmp_annoagent <- NULL
+    rownames(merged) <- merged$cell_id_tmp_ontoanno
+    merged$cell_id_tmp_ontoanno <- NULL
     names(merged)[names(merged) == prediction_column] <- rename_to
     seurat_obj@meta.data <- merged
   } else if (nrow(df) == nrow(seurat_obj@meta.data)) {

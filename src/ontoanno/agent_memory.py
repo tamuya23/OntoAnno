@@ -28,11 +28,19 @@ def _default_memory(config: dict[str, Any]) -> dict[str, Any]:
 
 def memory_path(config: dict[str, Any]) -> Path:
     work_dir = Path(str(config["project"]["work_dir"]))
+    return work_dir / "ontoanno_memory.json"
+
+
+def _legacy_memory_path(config: dict[str, Any]) -> Path:
+    work_dir = Path(str(config["project"]["work_dir"]))
     return work_dir / "agent_memory.json"
 
 
 def load_agent_memory(config: dict[str, Any]) -> dict[str, Any]:
     path = memory_path(config)
+    legacy_path = _legacy_memory_path(config)
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
     if not path.exists():
         return _default_memory(config)
     payload = load_json(path)
