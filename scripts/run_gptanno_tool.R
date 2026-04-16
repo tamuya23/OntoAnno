@@ -226,6 +226,65 @@ final_dimplot_pdf <- file.path(subcluster_dir, "DimPlot_celltype_final.pdf")
 ontology_workflow_rds <- file.path(subcluster_dir, "ontology_workflow.rds")
 inheritance_workflow_rds <- file.path(subcluster_dir, "marker_inheritance_workflow.rds")
 
+external_marker_genes_dir <- inputs$marker_genes_dir %||% NULL
+
+has_external_marker_genes <- function() {
+  !is.null(external_marker_genes_dir) &&
+    nzchar(external_marker_genes_dir) &&
+    dir.exists(external_marker_genes_dir)
+}
+
+marker_file_for_resolution <- function(marker_dir, resolution) {
+  file.path(marker_dir, paste0("markers_res_", as.character(resolution), ".rds"))
+}
+
+validate_marker_gene_inputs <- function(seurat_obj, marker_dir) {
+  required_cluster_cols <- paste0("cluster_res.", unlist(annotation_cfg$parent_res))
+  missing_cluster_cols <- setdiff(required_cluster_cols, colnames(seurat_obj@meta.data))
+  if (length(missing_cluster_cols) > 0) {
+    stop(
+      "inputs.marker_genes_dir was provided, but the input Seurat object is missing required cluster metadata column(s): ",
+      paste(missing_cluster_cols, collapse = ", "),
+      ". Provide a Seurat object that already contains these cluster_res.* columns, or run clustering normally."
+    )
+  }
+
+  required_marker_files <- vapply(
+    unlist(annotation_cfg$parent_res),
+    function(resolution) marker_file_for_resolution(marker_dir, resolution),
+    character(1)
+  )
+  missing_marker_files <- required_marker_files[!file.exists(required_marker_files)]
+  if (length(missing_marker_files) > 0) {
+    stop(
+      "inputs.marker_genes_dir is missing marker file(s) for configured parent resolutions: ",
+      paste(missing_marker_files, collapse = ", ")
+    )
+  }
+}
+
+copy_external_marker_genes <- function(source_dir, target_dir) {
+  source_norm <- normalizePath(source_dir, mustWork = TRUE)
+  target_norm <- normalizePath(target_dir, mustWork = FALSE)
+  if (identical(source_norm, target_norm)) {
+    return(target_dir)
+  }
+
+  if (dir.exists(target_dir)) {
+    unlink(target_dir, recursive = TRUE, force = TRUE)
+  }
+  dir.create(target_dir, recursive = TRUE, showWarnings = FALSE)
+
+  files <- list.files(source_norm, recursive = TRUE, full.names = TRUE, all.files = FALSE, no.. = TRUE)
+  for (file in files) {
+    relative <- substring(file, nchar(source_norm) + 2L)
+    destination <- file.path(target_dir, relative)
+    dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)
+    file.copy(file, destination, overwrite = TRUE)
+  }
+  target_dir
+}
+
 load_parent_resolution_info <- function() {
   if (file.exists(best_parent_resolution_json)) {
     payload <- jsonlite::fromJSON(best_parent_resolution_json)
@@ -412,6 +471,22 @@ run_cluster_parent_markers <- function() {
       clustered_rds = bootstrap$clustered_rds,
       markers_dir = bootstrap$markers_dir,
       bootstrapped = TRUE
+    ))
+  }
+
+  if (has_external_marker_genes()) {
+    run_preprocess_parent()
+    seurat_obj <- readRDS(preprocessed_rds)
+    copied_markers_dir <- copy_external_marker_genes(external_marker_genes_dir, markers_dir)
+    validate_marker_gene_inputs(seurat_obj, copied_markers_dir)
+    saveRDS(seurat_obj, clustered_rds)
+    return(list(
+      preprocessed_rds = preprocessed_rds,
+      clustered_rds = clustered_rds,
+      markers_dir = copied_markers_dir,
+      external_marker_genes_dir = external_marker_genes_dir,
+      skipped_clustering = TRUE,
+      bootstrapped = FALSE
     ))
   }
 

@@ -99,6 +99,47 @@ REPORT_TEMPLATE = """<!DOCTYPE html>
     </tbody>
   </table>
 
+  {% if rag_review.available %}
+  <h2>RAG Check Review</h2>
+  <div class="box">
+    <p><strong>Discussion:</strong> {{ rag_review.discussion }}</p>
+  </div>
+  <div class="summary-grid">
+    <div class="summary-item"><div class="label">Review Packets</div><div class="value">{{ rag_review.review_packet_count }}</div></div>
+    <div class="summary-item"><div class="label">Flagged Initially</div><div class="value">{{ rag_review.initial_flagged_count }}</div></div>
+    <div class="summary-item"><div class="label">LLM Compared</div><div class="value">{{ rag_review.llm_compared_count }}</div></div>
+    <div class="summary-item"><div class="label">Human Review Needed</div><div class="value">{{ rag_review.ask_user_count }}</div></div>
+  </div>
+  {% if rag_review.rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Cluster</th>
+        <th>Current Label</th>
+        <th>Phase</th>
+        <th>Next Action</th>
+        <th>Recommended Label</th>
+        <th>LLM Decision</th>
+        <th>Reason Codes</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in rag_review.rows %}
+      <tr>
+        <td>{{ row.cluster_id }}</td>
+        <td>{{ row.current_label }}</td>
+        <td>{{ row.phase }}</td>
+        <td>{{ row.next_action }}</td>
+        <td>{{ row.recommended_label }}</td>
+        <td>{{ row.llm_decision }}</td>
+        <td>{{ row.reason_codes }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
+
   <h2>Cluster Decisions</h2>
   {% for cluster in clusters %}
   <div class="card">
@@ -547,6 +588,71 @@ def _build_cluster_payload(outputs: dict[str, Any]) -> tuple[list[dict[str, Any]
     return cluster_list, summary
 
 
+def _truthy_csv_value(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"true", "1", "yes", "y"}
+
+
+def _build_rag_review_payload(outputs: dict[str, Any]) -> dict[str, Any]:
+    review_outputs = outputs.get("review_packets", {}) if isinstance(outputs.get("review_packets"), dict) else {}
+    controller_outputs = outputs.get("controller", {}) if isinstance(outputs.get("controller"), dict) else {}
+    llm_outputs = outputs.get("llm_compare", {}) if isinstance(outputs.get("llm_compare"), dict) else {}
+
+    review_rows = _read_csv_rows(review_outputs.get("summary_csv"))
+    controller_rows = _read_csv_rows(controller_outputs.get("summary_csv"))
+    llm_rows = _read_csv_rows(llm_outputs.get("summary_csv"))
+    controller_summary = controller_outputs.get("summary", {}) if isinstance(controller_outputs.get("summary"), dict) else {}
+
+    available = bool(review_rows or controller_rows or llm_rows or controller_summary)
+    if not available:
+        return {
+            "available": False,
+            "discussion": "",
+            "review_packet_count": 0,
+            "initial_flagged_count": 0,
+            "llm_compared_count": 0,
+            "ask_user_count": 0,
+            "rows": [],
+        }
+
+    review_packet_count = len(review_rows)
+    initial_flagged_count = sum(1 for row in review_rows if _truthy_csv_value(row.get("needs_review")))
+    llm_compared_count = len(llm_rows)
+    ask_user_count = int(controller_summary.get("ask_user_count", 0) or 0)
+    finalize_keep_count = int(controller_summary.get("finalize_keep_count", 0) or 0)
+    finalize_llm_count = int(controller_summary.get("finalize_llm_count", 0) or 0)
+
+    rows = []
+    for row in controller_rows:
+        rows.append(
+            {
+                "cluster_id": row.get("cluster_id", ""),
+                "current_label": row.get("current_label", ""),
+                "phase": row.get("phase", ""),
+                "next_action": row.get("next_action", ""),
+                "recommended_label": row.get("recommended_label", ""),
+                "llm_decision": row.get("llm_decision", ""),
+                "reason_codes": row.get("reason_codes", ""),
+            }
+        )
+
+    discussion = (
+        f"RAG check built {review_packet_count} review packet(s), initially flagged "
+        f"{initial_flagged_count} cluster(s), sent {llm_compared_count} cluster(s) to LLM comparison, "
+        f"kept {finalize_keep_count} cluster(s) without label changes, accepted {finalize_llm_count} LLM-supported choice(s), "
+        f"and left {ask_user_count} cluster(s) for human review."
+    )
+
+    return {
+        "available": True,
+        "discussion": discussion,
+        "review_packet_count": review_packet_count,
+        "initial_flagged_count": initial_flagged_count,
+        "llm_compared_count": llm_compared_count,
+        "ask_user_count": ask_user_count,
+        "rows": rows,
+    }
+
+
 def _resolve_parent_annotation_outputs(config: dict[str, Any], outputs: dict[str, Any]) -> dict[str, Any]:
     parent_outputs = outputs.get("annotate_parent", {}) if isinstance(outputs.get("annotate_parent"), dict) else {}
     gptanno_tools = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
@@ -766,6 +872,7 @@ def _build_report_context(config: dict[str, Any], state: dict[str, Any], manifes
     figures = _build_figure_payload(figure_outputs, report_path.parent)
 
     clusters, cluster_summary = _build_cluster_payload(outputs)
+    rag_review = _build_rag_review_payload(outputs)
     subcluster_outputs = _resolve_subcluster_outputs(config, outputs)
     subcluster = _build_subcluster_payload(config, outputs)
     parent_outputs = _resolve_parent_annotation_outputs(config, outputs)
@@ -787,6 +894,7 @@ def _build_report_context(config: dict[str, Any], state: dict[str, Any], manifes
         "annotation": annotation,
         "policy": policy,
         "cluster_summary": cluster_summary,
+        "rag_review": rag_review,
         "figures": figures,
         "clusters": clusters,
         "subcluster": subcluster,
@@ -958,6 +1066,31 @@ def _render_pdf_report(context: dict[str, Any], report_path: Path) -> Path:
 
     for figure in context["figures"].get("parent", []):
         doc.image_page(figure["title"], figure["path"])
+
+    rag_review = context.get("rag_review", {})
+    if rag_review.get("available"):
+        doc._new_page()
+        doc.heading("RAG Check Review", level=1)
+        doc.paragraph(str(rag_review.get("discussion") or ""))
+        doc.kv("Review packets", str(rag_review.get("review_packet_count", 0)))
+        doc.kv("Flagged initially", str(rag_review.get("initial_flagged_count", 0)))
+        doc.kv("LLM compared", str(rag_review.get("llm_compared_count", 0)))
+        doc.kv("Human review needed", str(rag_review.get("ask_user_count", 0)))
+        for row in rag_review.get("rows", [])[:20]:
+            doc.paragraph(
+                "Cluster {cluster_id} | {current_label} | {phase} | {next_action} | {recommended_label} | {reason_codes}".format(
+                    **{
+                        "cluster_id": row.get("cluster_id", ""),
+                        "current_label": row.get("current_label", ""),
+                        "phase": row.get("phase", ""),
+                        "next_action": row.get("next_action", ""),
+                        "recommended_label": row.get("recommended_label", ""),
+                        "reason_codes": row.get("reason_codes", ""),
+                    }
+                ),
+                font=doc.small_font,
+            )
+            doc.spacer(4)
 
     doc._new_page()
     doc.heading("Parent Cluster Overview", level=1)

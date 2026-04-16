@@ -106,6 +106,7 @@ def load_config(config_path: str | Path, repo_root: Path) -> dict[str, Any]:
     inputs["seurat_rds"] = _resolve_path(_require(config, "inputs.seurat_rds"), base_dir=base_dir)
     inputs["manual_labels_csv"] = _resolve_path(inputs.get("manual_labels_csv"), base_dir=base_dir)
     inputs["pdf_dir"] = _resolve_path(inputs.get("pdf_dir"), base_dir=base_dir)
+    inputs["marker_genes_dir"] = _resolve_path(inputs.get("marker_genes_dir"), base_dir=base_dir)
     config["policy"] = normalize_policy(config.get("policy"))
 
     for baseline in config.get("evaluation", {}).get("baselines", []):
@@ -189,6 +190,11 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
             path = Path(_require(config, key))
             if not path.exists():
                 errors.append(f"Missing required file: {path}")
+        marker_genes_dir = config["inputs"].get("marker_genes_dir")
+        if marker_genes_dir:
+            marker_path = Path(marker_genes_dir)
+            if not marker_path.exists() or not marker_path.is_dir():
+                errors.append(f"Marker genes directory not found: {marker_path}")
 
     manual_labels_csv = config["inputs"].get("manual_labels_csv")
     if needs_evaluation and manual_labels_csv and not Path(manual_labels_csv).exists():

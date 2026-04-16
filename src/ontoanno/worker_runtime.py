@@ -106,6 +106,129 @@ def _worker_result(
     return result
 
 
+def _blocked_worker_result(worker: str, readiness: dict[str, Any]) -> dict[str, Any]:
+    missing = [str(item) for item in readiness.get("missing", []) if str(item).strip()]
+    notes = [str(item) for item in readiness.get("notes", []) if str(item).strip()]
+    if missing:
+        notes.append("Missing prerequisite(s): " + ", ".join(missing))
+    return _worker_result(
+        worker=worker,
+        implementation="worker_prerequisite_guard",
+        status="blocked",
+        outputs={"missing_prerequisites": missing},
+        notes=notes or ["This worker is blocked by missing prerequisites."],
+    )
+
+
+def _missing_paths(*paths: Path) -> list[str]:
+    return [str(path) for path in paths if not path.exists()]
+
+
+def _has_review_packets(orchestrator: Any) -> bool:
+    return (orchestrator.run_dir / "review_packets" / "index.json").exists()
+
+
+def _has_controller_index(orchestrator: Any) -> bool:
+    return (orchestrator.run_dir / "controller" / "index.json").exists()
+
+
+def _has_ontology_relations(orchestrator: Any) -> bool:
+    outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
+    if isinstance(outputs.get("ontology_relations"), dict) and outputs.get("ontology_relations"):
+        return True
+    return (orchestrator.run_dir / "ontology_relations" / "ontology_relations.outputs.json").exists()
+
+
+def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]:
+    parent_dir = orchestrator.work_dir / "annotate_parent"
+    subcluster_dir = orchestrator.work_dir / "annotate_subclusters"
+    input_rds = Path(str(orchestrator.config.get("inputs", {}).get("seurat_rds") or ""))
+    preprocessed_rds = parent_dir / "seurat_preprocessed.rds"
+    clustered_rds = parent_dir / "seurat_clustered.rds"
+    annotation_parent_rds = parent_dir / "annotation_parent.rds"
+    best_parent_resolution_json = parent_dir / "best_parent_resolution.json"
+    parent_seurat_rds = parent_dir / "seurat_parent_annotated.rds"
+    subcluster_result_rds = subcluster_dir / "subcluster_find_markers.rds"
+    ontology_workflow_rds = subcluster_dir / "ontology_workflow.rds"
+    inheritance_workflow_rds = subcluster_dir / "marker_inheritance_workflow.rds"
+    decisions_json, _ = _interactive_decisions_paths(orchestrator.run_dir)
+
+    missing: list[str] = []
+    notes: list[str] = []
+
+    if worker == "preprocess_parent":
+        missing = _missing_paths(input_rds)
+    elif worker == "cluster_parent_markers":
+        missing = _missing_paths(preprocessed_rds)
+        notes.append("Run preprocess_parent first.")
+    elif worker == "annotate_parent_raw":
+        missing = _missing_paths(clustered_rds)
+        if not (parent_dir / "marker_genes").exists():
+            missing.append(str(parent_dir / "marker_genes"))
+        notes.append("Run cluster_parent_markers first.")
+    elif worker == "map_parent_ontology":
+        missing = _missing_paths(annotation_parent_rds)
+        notes.append("Run annotate_parent_raw first.")
+    elif worker == "select_parent_resolution":
+        missing = _missing_paths(annotation_parent_rds)
+        notes.append("Run annotate_parent_raw first.")
+    elif worker == "assign_parent_labels":
+        missing = _missing_paths(clustered_rds, annotation_parent_rds, best_parent_resolution_json)
+        notes.append("Run select_parent_resolution first if best_parent_resolution.json is missing.")
+    elif worker == "subcluster_find_markers":
+        missing = _missing_paths(parent_seurat_rds)
+        targets = orchestrator.config.get("alignment", {}).get("celltypes_to_subcluster")
+        if not isinstance(targets, list) or not [item for item in targets if str(item).strip()]:
+            missing.append("alignment.celltypes_to_subcluster")
+        notes.append("Run assign_parent_labels and configure target cell type(s) first.")
+    elif worker in {"subcluster_annotate_ontology", "subcluster_annotate_inheritance"}:
+        missing = _missing_paths(subcluster_result_rds)
+        notes.append("Run subcluster_find_markers first.")
+    elif worker == "finalize_subcluster_annotations":
+        missing = _missing_paths(ontology_workflow_rds, inheritance_workflow_rds)
+        notes.append("Run both subcluster annotation workers first.")
+    elif worker == "build_review_packets":
+        if not has_parent_annotation_outputs(orchestrator):
+            missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
+            notes.append("Run parent annotation through assign_parent_labels first.")
+    elif worker == "decide_rag_check":
+        if not _has_review_packets(orchestrator):
+            missing = [str(orchestrator.run_dir / "review_packets" / "index.json")]
+            notes.append("Run build_review_packets first.")
+    elif worker == "build_candidate_map":
+        if not _has_controller_index(orchestrator):
+            missing = [str(orchestrator.run_dir / "controller" / "index.json")]
+            notes.append("Run decide_rag_check first.")
+    elif worker == "retrieve_rag_evidence":
+        if not _has_ontology_relations(orchestrator):
+            missing = [str(orchestrator.run_dir / "ontology_relations" / "ontology_relations.outputs.json")]
+            notes.append("Run build_candidate_map first.")
+    elif worker == "run_llm_compare":
+        if not _has_ontology_relations(orchestrator):
+            missing = [str(orchestrator.run_dir / "ontology_relations" / "ontology_relations.outputs.json")]
+            notes.append("Run build_candidate_map first.")
+    elif worker == "human_review":
+        if not _has_controller_index(orchestrator):
+            missing = [str(orchestrator.run_dir / "controller" / "index.json")]
+            notes.append("Run decide_rag_check post_compare first.")
+    elif worker == "export_reviewed_parent_annotations":
+        missing = _missing_paths(decisions_json)
+        notes.append("Run or save human-review decisions first.")
+    elif worker == "generate_report":
+        if not has_parent_annotation_outputs(orchestrator):
+            missing = [str(parent_seurat_rds)]
+            notes.append("Run parent annotation first.")
+
+    missing = [item for item in missing if item]
+    ok = len(missing) == 0
+    return {
+        "ok": ok,
+        "status": "ready" if ok else "blocked",
+        "missing": missing,
+        "notes": [] if ok else notes,
+    }
+
+
 def _controller_cluster_ids(run_dir: Path, action: str) -> list[str]:
     index_path = run_dir / "controller" / "index.json"
     if not index_path.exists():
@@ -477,6 +600,10 @@ def run_named_worker(
 ) -> dict[str, Any]:
     if worker not in AVAILABLE_WORKERS:
         raise ValueError(f"Unsupported worker: {worker}")
+
+    readiness = worker_prerequisite_status(orchestrator, worker)
+    if not readiness.get("ok"):
+        return _blocked_worker_result(worker, readiness)
 
     if worker in PARENT_BACKBONE_WORKERS:
         return run_gptanno_worker_chain(orchestrator, [worker], force=True if force else False)[0]

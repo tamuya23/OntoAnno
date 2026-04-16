@@ -537,7 +537,8 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         values = raw_config["alignment"].get("celltypes_to_subcluster")
         if not isinstance(values, list):
             values = []
-        if celltype not in values:
+        normalized_existing = {str(item).strip().casefold() for item in values if str(item).strip()}
+        if celltype.casefold() not in normalized_existing:
             values.append(celltype)
         raw_config["alignment"]["celltypes_to_subcluster"] = values
         _save_raw_config(config_path, raw_config)

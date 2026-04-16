@@ -1,10 +1,14 @@
 project:
   name: PDAC_sn
-  work_dir: /proj/bzou_lab/projects/OntoAnno_Publish/work/PDAC_sn
+  work_dir: /proj/bzou_lab/projects/OntoAnno/work/PDAC_sn
 inputs:
   seurat_rds: /proj/bzou_lab/projects/GPTAnno_Experiment/PDAC_sn/PDAC_sn.rds
   manual_labels_csv: /proj/bzou_lab/projects/GPTAnno_Experiment/PDAC_sn/PDAC_singleR_annotation.csv
   pdf_dir: null
+  # Optional: precomputed GPTAnno marker folder with markers_res_<resolution>.rds files.
+  # When set, OntoAnno skips parent clustering/marker recomputation and starts from annotation.
+  # The Seurat metadata must already contain cluster_res.<resolution> columns for annotation.parent_res.
+  marker_genes_dir: null
 policy:
   ontology: true
   granularity: balanced
@@ -36,7 +40,6 @@ annotation:
   tissue_name: Human pancreatic ductal adenocarcinoma (PDAC) tumor
   n_runs_parent: 10
   n_runs_sub: 10
-  forced_parent_resolution: '0.3'
 alignment:
   celltypes_to_subcluster:
   - macrophage

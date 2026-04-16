@@ -6,7 +6,7 @@ import re
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .agent_memory import load_agent_memory
 from .agent_requests import _extract_celltype, apply_agent_request
@@ -480,6 +480,7 @@ def route_agent_request(
     apply: bool = False,
     reset_session: bool = False,
     max_rounds: int = 2,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     if reset_session:
         reset_agent_session(config)
@@ -567,6 +568,15 @@ def route_agent_request(
             user_request=user_message.strip(),
             session=session,
         )
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "stage": "selected_tool",
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "intent_type": intent.get("intent_type"),
+                }
+            )
         if intent.get("intent_type") == "add_external_evidence":
             resolved_celltype = _resolve_external_evidence_target(
                 user_request=user_message.strip(),

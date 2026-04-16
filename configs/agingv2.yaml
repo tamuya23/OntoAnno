@@ -5,6 +5,10 @@ inputs:
   seurat_rds: /proj/bzou_lab/projects/GPTAnno_Experiment/AgingV2/Aging_preprocessed.rds
   manual_labels_csv: /proj/bzou_lab/projects/GPTAnno_Experiment/AgingV2/Aging_metadata_update.csv
   pdf_dir: null
+  # Optional: precomputed GPTAnno marker folder with markers_res_<resolution>.rds files.
+  # When set, OntoAnno skips parent clustering/marker recomputation and starts from annotation.
+  # The Seurat metadata must already contain cluster_res.<resolution> columns for annotation.parent_res.
+  marker_genes_dir: null
 policy:
   ontology: true
   granularity: fine

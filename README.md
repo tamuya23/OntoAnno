@@ -127,6 +127,7 @@ Important top-level sections:
   - `seurat_rds`
   - `manual_labels_csv`
   - `pdf_dir`
+  - `marker_genes_dir`
 - `policy`
   - `ontology`
   - `granularity`
@@ -154,6 +155,13 @@ Important top-level sections:
   - `on_missing_decision`
 - `evaluation`
 - `report`
+
+Optional precomputed marker input:
+
+- `inputs.marker_genes_dir`
+  - points to a folder containing GPTAnno-style `markers_res_<resolution>.rds` files, for example `markers_res_0.1.rds`
+  - lets OntoAnno skip parent clustering and marker recomputation, then continue directly into parent annotation
+  - requires the input Seurat object metadata to already contain matching `cluster_res.<resolution>` columns for every configured `annotation.parent_res`
 
 Two fields matter especially for current agent behavior:
 
@@ -209,7 +217,7 @@ Main areas:
   - `Parent Annotation`
   - `Subcluster`
   - `RAG Review`
-  - `Report`
+  - `Report`, including a preview of the generated report and the RAG-check discussion section when review artifacts exist
 - `External Evidence`
   - user-provided evidence
   - literature-provided evidence placeholder
@@ -350,6 +358,7 @@ Current worker chain:
 Current behavior:
 
 - if saved reviewed decisions exist and reviewed outputs have not yet been exported, report generation first attempts reviewed export automatically
+- if RAG-check outputs exist, the report includes a dedicated `RAG Check Review` section summarizing flagged clusters, LLM comparisons, accepted changes, and human-review needs
 
 ## Worker Inventory
 

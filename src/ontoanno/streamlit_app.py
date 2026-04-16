@@ -25,7 +25,7 @@ from ontoanno.agent_session import reset_agent_session, session_path
 from ontoanno.config import load_config
 from ontoanno.orchestrator import Orchestrator
 from ontoanno.utils import dump_json, load_json
-from ontoanno.worker_runtime import AVAILABLE_WORKERS, run_named_worker
+from ontoanno.worker_runtime import AVAILABLE_WORKERS, run_named_worker, worker_prerequisite_status
 
 
 def _repo_root() -> Path:
@@ -43,6 +43,136 @@ def _default_reset_session() -> bool:
     return (os.getenv("ONTOANNO_STREAMLIT_RESET_SESSION") or "0") == "1"
 
 
+WORKER_GUIDE: dict[str, dict[str, Any]] = {
+    "preprocess_parent": {
+        "category": "Parent annotation",
+        "purpose": "Prepare the input Seurat object for parent-level clustering and marker detection.",
+        "inputs": "Configured Seurat RDS input and annotation preprocessing settings.",
+        "outputs": "`annotate_parent/seurat_preprocessed.rds`.",
+        "manual_use": "Run only when the input object or preprocessing-related config changed.",
+    },
+    "cluster_parent_markers": {
+        "category": "Parent annotation",
+        "purpose": "Cluster cells at configured parent resolutions and compute marker genes for each cluster.",
+        "inputs": "`seurat_preprocessed.rds`, `annotation.parent_res`, and marker-detection settings. If `inputs.marker_genes_dir` is configured, this worker validates/copies the supplied marker folder and skips marker recomputation.",
+        "outputs": "`seurat_clustered.rds` and `annotate_parent/marker_genes/`.",
+        "manual_use": "Useful after changing parent resolutions. This can be slow unless an external marker folder is supplied.",
+    },
+    "annotate_parent_raw": {
+        "category": "Parent annotation",
+        "purpose": "Run GPTAnno parent annotation for each candidate parent resolution.",
+        "inputs": "Parent cluster marker genes and tissue/species/ontology settings.",
+        "outputs": "`annotation_parent.rds` and parent prediction figures under `prediction/`.",
+        "manual_use": "Run after marker files change or when regenerating parent label candidates.",
+    },
+    "map_parent_ontology": {
+        "category": "Parent annotation",
+        "purpose": "Map raw parent annotation candidates onto ontology-compatible labels.",
+        "inputs": "`annotation_parent.rds` and ontology policy settings.",
+        "outputs": "`parent_ontology_mapping.csv` and `parent_ontology_mapping.rds`.",
+        "manual_use": "Run after raw parent annotation or ontology restriction settings change.",
+    },
+    "select_parent_resolution": {
+        "category": "Parent annotation",
+        "purpose": "Score available parent resolutions and choose the current parent resolution.",
+        "inputs": "`annotation_summary_scores.csv` inputs derived from parent annotation results.",
+        "outputs": "`annotation_summary_scores.csv` and `best_parent_resolution.json`.",
+        "manual_use": "Good standalone test worker. Run this after removing or changing forced resolution settings.",
+    },
+    "assign_parent_labels": {
+        "category": "Parent annotation",
+        "purpose": "Apply the selected parent resolution and final parent labels to the Seurat object.",
+        "inputs": "`best_parent_resolution.json`, ontology mapping, clustered Seurat object.",
+        "outputs": "`seurat_parent_annotated.rds` and manifest parent-assignment entries.",
+        "manual_use": "Run after `select_parent_resolution` when switching to an already-computed resolution.",
+    },
+    "subcluster_find_markers": {
+        "category": "Subcluster",
+        "purpose": "Subset configured parent cell types, recluster them, and compute subcluster markers.",
+        "inputs": "Parent-annotated Seurat object and `alignment.celltypes_to_subcluster`.",
+        "outputs": "Subcluster marker files and intermediate subcluster Seurat artifacts.",
+        "manual_use": "Run when adding/changing target parent cell types or subcluster resolutions.",
+    },
+    "subcluster_annotate_ontology": {
+        "category": "Subcluster",
+        "purpose": "Annotate subclusters using ontology-constrained labels.",
+        "inputs": "Subcluster marker genes and ontology restriction settings.",
+        "outputs": "Ontology-based subcluster annotation artifacts.",
+        "manual_use": "Run after subcluster markers are available.",
+    },
+    "subcluster_annotate_inheritance": {
+        "category": "Subcluster",
+        "purpose": "Annotate subclusters with inherited parent-label context.",
+        "inputs": "Subcluster marker genes plus parent annotation context.",
+        "outputs": "Inheritance-based subcluster annotation artifacts.",
+        "manual_use": "Run after subcluster markers are available; useful for comparing ontology vs inheritance workflows.",
+    },
+    "finalize_subcluster_annotations": {
+        "category": "Subcluster",
+        "purpose": "Merge ontology and inheritance subcluster outputs into the final subcluster annotation result.",
+        "inputs": "Ontology and inheritance subcluster annotations.",
+        "outputs": "`annotate_subclusters/seurat_ontology_annotated.rds` and final subcluster tables/manifest entries.",
+        "manual_use": "Run after both subcluster annotation branches finish.",
+    },
+    "build_review_packets": {
+        "category": "RAG check",
+        "purpose": "Build per-cluster review packets from current parent annotations and marker evidence.",
+        "inputs": "Parent annotation outputs, marker genes, selected labels.",
+        "outputs": "`review_packets/` JSON/CSV packet files.",
+        "manual_use": "First RAG worker. Blocked if parent annotation outputs do not exist.",
+    },
+    "decide_rag_check": {
+        "category": "RAG check",
+        "purpose": "Controller step that decides which clusters can pass and which need candidate maps, LLM compare, or human review.",
+        "inputs": "Review packets plus artifacts from earlier RAG phases.",
+        "outputs": "`controller/` state files with next actions.",
+        "manual_use": "Use `Phase` to choose `initial`, `post_ontology`, or `post_compare`; `auto` is usually fine for quick testing.",
+    },
+    "build_candidate_map": {
+        "category": "RAG check",
+        "purpose": "Build candidate label maps and ontology/reference relationships for clusters selected by the controller.",
+        "inputs": "Controller states whose next action is candidate-map construction.",
+        "outputs": "Ontology relation and candidate-map artifacts.",
+        "manual_use": "Usually run after `build_review_packets` and `decide_rag_check`.",
+    },
+    "retrieve_rag_evidence": {
+        "category": "RAG check",
+        "purpose": "Expose the evidence-retrieval layer used by RAG checks.",
+        "inputs": "Candidate maps and external evidence memory.",
+        "outputs": "Currently shares outputs with `build_candidate_map`; reference retrieval is embedded there.",
+        "manual_use": "Mostly diagnostic for now; it may report skipped if no candidate-map outputs are needed.",
+    },
+    "run_llm_compare": {
+        "category": "RAG check",
+        "purpose": "Ask the LLM to compare annotation labels against marker and ontology evidence.",
+        "inputs": "Controller-selected clusters, candidate maps, retrieved evidence.",
+        "outputs": "LLM comparison results and summary counts.",
+        "manual_use": "Run after candidate maps exist. This can call the LLM and may take time.",
+    },
+    "human_review": {
+        "category": "RAG check",
+        "purpose": "Load or report clusters that still require human review after automated checks.",
+        "inputs": "Post-compare controller state and saved review decisions if present.",
+        "outputs": "Human-review status and decision-file references.",
+        "manual_use": "This Streamlit worker does not collect new decisions yet; it reports or loads saved decisions.",
+    },
+    "export_reviewed_parent_annotations": {
+        "category": "Output",
+        "purpose": "Apply saved human-review decisions and export reviewed parent annotations.",
+        "inputs": "`reviewed_parent/interactive_decisions.json` and parent annotation outputs.",
+        "outputs": "Reviewed parent Seurat object and reviewed annotation artifacts.",
+        "manual_use": "Run only after human-review decisions exist.",
+    },
+    "generate_report": {
+        "category": "Output",
+        "purpose": "Generate the final OntoAnno HTML report from current parent, subcluster, RAG, and reviewed artifacts.",
+        "inputs": "Current project artifacts and manifest entries.",
+        "outputs": "Final report HTML and report figures/tables.",
+        "manual_use": "Safe to run after major workflow steps complete; use Force to rebuild.",
+    },
+}
+
+
 def _load_runtime(config_path: str) -> tuple[dict[str, Any], Orchestrator]:
     repo_root = _repo_root()
     config = load_config(config_path, repo_root)
@@ -54,6 +184,54 @@ def _refresh_runtime() -> tuple[dict[str, Any], Orchestrator]:
     config, orchestrator = _load_runtime(str(_config_path()))
     orchestrator = Orchestrator(_repo_root(), config)
     return config, orchestrator
+
+
+def _resolution_value(value: Any) -> str:
+    text = str(value or "").strip()
+    return text.removeprefix("res_")
+
+
+def _algorithm_best_parent_resolution(orchestrator: Orchestrator) -> str:
+    scores_csv = orchestrator.work_dir / "annotate_parent" / "annotation_summary_scores.csv"
+    if not scores_csv.exists():
+        return ""
+    score_rows = _read_csv_rows(str(scores_csv))
+    best_row: dict[str, Any] | None = None
+    best_score: float | None = None
+    for row in score_rows:
+        try:
+            score = float(row.get("composite_score"))
+        except (TypeError, ValueError):
+            continue
+        if best_score is None or score > best_score:
+            best_score = score
+            best_row = row
+    if best_row is None and score_rows:
+        best_row = score_rows[0]
+    return _resolution_value(best_row.get("resolution") if best_row else "")
+
+
+def _selected_parent_resolution(config: dict[str, Any], orchestrator: Orchestrator) -> tuple[str, str]:
+    annotation = config.get("annotation", {}) if isinstance(config.get("annotation"), dict) else {}
+    forced_resolution = _resolution_value(annotation.get("forced_parent_resolution"))
+    if forced_resolution:
+        return forced_resolution, "forced"
+
+    outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
+    gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
+    for worker in ("assign_parent_labels", "select_parent_resolution"):
+        payload = gptanno.get(worker, {}) if isinstance(gptanno.get(worker), dict) else {}
+        selected = _resolution_value(payload.get("best_resolution_value") or payload.get("best_resolution"))
+        if selected:
+            return selected, "auto"
+
+    best_json = orchestrator.work_dir / "annotate_parent" / "best_parent_resolution.json"
+    if best_json.exists():
+        payload = load_json(best_json)
+        selected = _resolution_value(payload.get("best_resolution_value") or payload.get("best_resolution"))
+        if selected:
+            return selected, "auto"
+    return "", ""
 
 
 def _project_state(config: dict[str, Any], orchestrator: Orchestrator) -> dict[str, Any]:
@@ -72,20 +250,16 @@ def _project_state(config: dict[str, Any], orchestrator: Orchestrator) -> dict[s
         parent_resolution_options = []
     else:
         parent_resolution_options = [str(configured_parent_res).strip()]
-    selected_resolution = "unknown"
-    annotate_parent = outputs.get("annotate_parent", {}) if isinstance(outputs.get("annotate_parent"), dict) else {}
-    best_resolution = str(annotate_parent.get("best_resolution") or "").strip()
-    if best_resolution:
-        selected_resolution = best_resolution
-    else:
-        forced_resolution = str(annotation.get("forced_parent_resolution") or "").strip()
-        if forced_resolution:
-            selected_resolution = forced_resolution
+    algorithm_resolution = _algorithm_best_parent_resolution(orchestrator) or "unknown"
+    selected_resolution, selected_resolution_source = _selected_parent_resolution(config, orchestrator)
+    selected_resolution = selected_resolution or "unknown"
     return {
         "project": config["project"]["name"],
         "run_id": orchestrator.run_id,
         "parent_resolution_options": parent_resolution_options,
+        "algorithm_parent_resolution": algorithm_resolution,
         "parent_resolution": selected_resolution,
+        "parent_resolution_source": selected_resolution_source,
         "granularity": policy.get("granularity", "balanced"),
         "ontology": policy.get("ontology", True),
         "session_path": str(session_path(config)),
@@ -148,6 +322,49 @@ def _chat_history() -> list[dict[str, Any]]:
     return st.session_state.setdefault("ui_chat_history", [])
 
 
+def _append_chat_message(
+    config: dict[str, Any],
+    role: str,
+    content: str,
+    *,
+    dedupe_last: bool = True,
+) -> None:
+    content = str(content or "").strip()
+    role = "user" if role == "user" else "assistant"
+    if not content:
+        return
+    history = _chat_history()
+    if dedupe_last and history:
+        last = history[-1]
+        if last.get("role") == role and str(last.get("content") or "").strip() == content:
+            return
+    history.append({"role": role, "content": content})
+    _save_ui_history(config, history)
+
+
+def _append_chat_message_to_disk(
+    config: dict[str, Any],
+    role: str,
+    content: str,
+    *,
+    dedupe_last: bool = True,
+) -> None:
+    content = str(content or "").strip()
+    role = "user" if role == "user" else "assistant"
+    if not content:
+        return
+    path = _ui_history_path(config)
+    payload = load_json(path) if path.exists() else {}
+    messages = payload.get("messages", []) if isinstance(payload, dict) else []
+    messages = [item for item in messages if isinstance(item, dict)]
+    if dedupe_last and messages:
+        last = messages[-1]
+        if last.get("role") == role and str(last.get("content") or "").strip() == content:
+            return
+    messages.append({"role": role, "content": content})
+    dump_json(path, {"messages": messages[-40:]})
+
+
 def _worker_history() -> list[dict[str, Any]]:
     return st.session_state.setdefault("ui_worker_history", [])
 
@@ -199,6 +416,51 @@ def _active_worker_label(log_name: str) -> str:
     label = label.replace("controller", "decide_rag_check")
     label = label.replace("reviewed_parent", "human_review")
     return label
+
+
+def _active_worker_for_job(orchestrator: Orchestrator, job: dict[str, Any]) -> str:
+    started_at = float(job.get("started_at") or time.time())
+    fresh_logs: list[Path] = []
+    for path in _collect_log_paths(orchestrator):
+        try:
+            if path.stat().st_mtime >= started_at - 3:
+                fresh_logs.append(path)
+        except OSError:
+            continue
+    if not fresh_logs:
+        return ""
+    active = max(fresh_logs, key=lambda path: (path.stat().st_mtime, str(path)))
+    return _active_worker_label(str(active.relative_to(orchestrator.run_dir)))
+
+
+def _format_agent_progress_event(event: dict[str, Any]) -> str:
+    stage = str(event.get("stage") or "").strip()
+    if stage == "selected_tool":
+        tool_name = str(event.get("tool_name") or "unknown").strip()
+        lines = [f"Selected workflow: `{tool_name}`."]
+        arguments = event.get("arguments") or {}
+        if isinstance(arguments, dict):
+            reason = str(arguments.get("reason") or "").strip()
+            if reason:
+                lines.append(f"Decision: {reason}")
+        return "\n\n".join(lines)
+    return ""
+
+
+def _maybe_append_agent_decision_events(config: dict[str, Any], job: dict[str, Any] | None) -> None:
+    if not job or not job.get("running"):
+        return
+    events = job.get("progress_events")
+    if not isinstance(events, list) or not events:
+        return
+    consumed = int(job.get("consumed_progress_events") or 0)
+    for event in events[consumed:]:
+        if not isinstance(event, dict):
+            continue
+        message = _format_agent_progress_event(event)
+        if message:
+            _append_chat_message(config, "assistant", message)
+    job["consumed_progress_events"] = len(events)
 
 
 PHASE_WORKER_MAP: dict[str, list[str]] = {
@@ -962,6 +1224,39 @@ def _render_worker_payload(payload: dict[str, Any]) -> None:
         st.json(artifacts)
 
 
+def _render_worker_guide(worker: str) -> None:
+    guide = WORKER_GUIDE.get(worker, {})
+    if not guide:
+        st.info("No guide is available for this worker yet.")
+        return
+    try:
+        container = st.container(border=True)
+    except TypeError:
+        container = st.container()
+    with container:
+        st.markdown(f"**{guide.get('category', 'Worker')}**")
+        st.write(str(guide.get("purpose") or ""))
+        st.markdown(f"**Input:** {guide.get('inputs', 'Not documented yet.')}")
+        st.markdown(f"**Output:** {guide.get('outputs', 'Not documented yet.')}")
+        st.markdown(f"**Manual use:** {guide.get('manual_use', 'Use with care.')}")
+
+
+def _render_worker_readiness(readiness: dict[str, Any]) -> None:
+    if readiness.get("ok"):
+        st.success("Ready to run.")
+        return
+    st.warning("Blocked: this worker is missing prerequisite artifacts.")
+    notes = [str(item) for item in readiness.get("notes", []) if str(item).strip()]
+    missing = [str(item) for item in readiness.get("missing", []) if str(item).strip()]
+    if notes:
+        for note in notes:
+            st.write(f"- {note}")
+    if missing:
+        with st.expander("Missing prerequisites", expanded=False):
+            for item in missing:
+                st.code(item)
+
+
 def _render_external_evidence_tab(config: dict[str, Any]) -> None:
     memory = load_agent_memory(config)
     custom_markers = memory.get("custom_markers", []) if isinstance(memory.get("custom_markers"), list) else []
@@ -1022,7 +1317,10 @@ def _render_chat_result(result: dict[str, Any]) -> str:
     lines: list[str] = []
     for item in result.get("tool_calls", []):
         lines.append(f"Tool: {item['tool_name']}")
-        lines.append(f"Arguments: {item['arguments']}")
+        arguments = item.get("arguments") or {}
+        if isinstance(arguments, dict) and arguments.get("reason"):
+            lines.append(f"Plan: {arguments['reason']}")
+        lines.append(f"Arguments: {arguments}")
         tool_result = item.get("result") or {}
         if tool_result.get("message"):
             lines.append(f"Result: {tool_result['message']}")
@@ -1047,19 +1345,29 @@ def _render_chat_result(result: dict[str, Any]) -> str:
 
 
 def _render_chat_history_panel(messages: list[dict[str, Any]]) -> None:
+    clean_messages = [
+        item for item in messages
+        if str(item.get("content") or "").strip()
+    ]
+    if clean_messages:
+        latest = clean_messages[-1]
+        latest_role = str(latest.get("role") or "assistant").strip().lower()
+        st.markdown("**Latest activity**")
+        with st.chat_message("user" if latest_role == "user" else "assistant"):
+            st.markdown(str(latest.get("content") or "").strip())
+
     try:
         container = st.container(height=700, border=True)
     except TypeError:
         container = st.container()
     with container:
-        if not messages:
+        if not clean_messages:
             st.info("No chat history yet.")
             return
-        for item in messages:
+        st.markdown("**Full history**")
+        for item in clean_messages:
             role = str(item.get("role") or "assistant").strip().lower()
             content = str(item.get("content") or "").strip()
-            if not content:
-                continue
             with st.chat_message("user" if role == "user" else "assistant"):
                 st.markdown(content)
 
@@ -1070,59 +1378,166 @@ def _agent_job_state() -> dict[str, Any] | None:
 
 def _start_agent_job(message: str) -> None:
     config_path = str(_config_path())
+    config_for_history = load_config(config_path, _repo_root())
     job: dict[str, Any] = {
         "message": message,
         "running": True,
         "result": None,
         "error": None,
         "started_at": time.time(),
+        "announced_workers": [],
+        "progress_events": [],
+        "consumed_progress_events": 0,
     }
 
     def _target() -> None:
+        thread_config: dict[str, Any] | None = None
         try:
             config, orchestrator = _load_runtime(config_path)
+            thread_config = config
+
+            def _progress(event: dict[str, Any]) -> None:
+                job.setdefault("progress_events", []).append(event)
+
             result = route_agent_request(
                 config=config,
                 orchestrator=orchestrator,
                 user_message=message,
                 apply=True,
                 reset_session=False,
+                progress_callback=_progress,
             )
             job["result"] = result
         except Exception as exc:  # noqa: BLE001
             job["error"] = f"{exc}\n\n{traceback.format_exc()}"
         finally:
+            if thread_config is not None:
+                if job.get("error"):
+                    final_text = f"Agent error: {job['error']}"
+                    job["persisted_result"] = {"assistant_message": final_text}
+                else:
+                    persisted_result = job.get("result") or {"assistant_message": "No result returned."}
+                    final_text = _render_chat_result(persisted_result)
+                    final_text = f"Completed.\n\n{final_text}" if final_text else "Completed."
+                    job["persisted_result"] = persisted_result
+                _append_chat_message_to_disk(thread_config, "assistant", final_text, dedupe_last=True)
+                job["persisted_final"] = True
             job["running"] = False
 
     thread = threading.Thread(target=_target, daemon=True)
     job["thread"] = thread
     st.session_state["ui_agent_job"] = job
-    history = _chat_history()
-    history.append({"role": "user", "content": message})
-    _save_ui_history(load_config(config_path, _repo_root()), history)
+    _append_chat_message(config_for_history, "user", message, dedupe_last=False)
     thread.start()
+
+
+def _maybe_append_agent_progress(
+    config: dict[str, Any],
+    orchestrator: Orchestrator,
+    job: dict[str, Any] | None,
+) -> None:
+    if not job or not job.get("running"):
+        return
+    worker = _active_worker_for_job(orchestrator, job)
+    if not worker or worker == "idle":
+        return
+    announced = job.setdefault("announced_workers", [])
+    if worker in announced:
+        return
+    announced.append(worker)
+    _append_chat_message(
+        config,
+        "assistant",
+        f"Running worker: `{worker}`.",
+    )
 
 
 def _finalize_agent_job(config: dict[str, Any]) -> None:
     job = _agent_job_state()
     if not job or job.get("running"):
         return
-    history = _chat_history()
-    if job.get("error"):
+    if job.get("persisted_final"):
+        result = job.get("persisted_result") or job.get("result") or {"assistant_message": "No result returned."}
+        st.session_state["ui_chat_history"] = _load_ui_history(config)
+    elif job.get("error"):
         text = f"Agent error: {job['error']}"
         result = {"assistant_message": text}
+        _append_chat_message(config, "assistant", text, dedupe_last=False)
     else:
         result = job.get("result") or {"assistant_message": "No result returned."}
         text = _render_chat_result(result)
-    history.append({"role": "assistant", "content": text})
-    _save_ui_history(config, history)
+        text = f"Completed.\n\n{text}" if text else "Completed."
+        _append_chat_message(config, "assistant", text, dedupe_last=False)
     _record_worker_event("Agent turn", result)
     st.session_state["ui_agent_job"] = None
 
 
-def _run_worker(orchestrator: Orchestrator, worker: str, *, force: bool, phase: str) -> None:
-    result = run_named_worker(orchestrator, worker, force=force, phase=phase)
+def _format_manual_worker_result(worker: str, result: dict[str, Any], *, force: bool, phase: str) -> str:
+    status = str(result.get("status") or "unknown").strip()
+    if status == "completed":
+        title = f"Worker completed: `{worker}`."
+    elif status == "blocked":
+        title = f"Worker blocked: `{worker}`."
+    elif status in {"failed", "partial"}:
+        title = f"Worker {status}: `{worker}`."
+    else:
+        title = f"Worker finished with status `{status}`: `{worker}`."
+
+    lines = [title, f"Options: `force={force}`, `phase={phase}`."]
+    implementation = str(result.get("implementation") or "").strip()
+    if implementation:
+        lines.append(f"Implementation: `{implementation}`.")
+
+    notes = [str(item).strip() for item in result.get("notes", []) if str(item).strip()]
+    if notes:
+        lines.append("Notes:")
+        for note in notes[:6]:
+            lines.append(f"- {note}")
+
+    artifacts = result.get("artifacts", {})
+    if isinstance(artifacts, dict) and artifacts:
+        preview_items: list[str] = []
+        for key, value in artifacts.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                preview_items.append(f"`{key}`: `{value}`")
+            elif isinstance(value, dict):
+                preview_items.append(f"`{key}`: object")
+            elif isinstance(value, list):
+                preview_items.append(f"`{key}`: {len(value)} item(s)")
+            if len(preview_items) >= 8:
+                break
+        if preview_items:
+            lines.append("Outputs:")
+            lines.extend(f"- {item}" for item in preview_items)
+    return "\n".join(lines)
+
+
+def _run_worker(config: dict[str, Any], orchestrator: Orchestrator, worker: str, *, force: bool, phase: str) -> None:
+    _append_chat_message(
+        config,
+        "user",
+        f"Run worker: `{worker}` (`force={force}`, `phase={phase}`).",
+        dedupe_last=False,
+    )
+    try:
+        result = run_named_worker(orchestrator, worker, force=force, phase=phase)
+    except Exception as exc:  # noqa: BLE001
+        result = {
+            "worker": worker,
+            "tool": worker,
+            "label": worker,
+            "implementation": "manual_worker_console",
+            "status": "failed",
+            "notes": [str(exc)],
+            "artifacts": {"traceback": traceback.format_exc()},
+        }
     _record_worker_event(f"worker-run: {worker}", result)
+    _append_chat_message(
+        config,
+        "assistant",
+        _format_manual_worker_result(worker, result, force=force, phase=phase),
+        dedupe_last=False,
+    )
 
 
 def main() -> None:
@@ -1150,6 +1565,7 @@ def main() -> None:
         st.write(f"Run: `{state['run_id']}`")
         parent_resolution_text = ", ".join(state.get("parent_resolution_options", [])) or "unknown"
         st.write(f"Parent resolutions: `{parent_resolution_text}`")
+        st.write(f"Algorithm best resolution: `{state['algorithm_parent_resolution']}`")
         st.write(f"Selected resolution: `{state['parent_resolution']}`")
         st.write(f"Granularity: `{state['granularity']}`")
         st.write(f"Ontology restricted: `{state['ontology']}`")
@@ -1203,10 +1619,17 @@ def main() -> None:
             st.subheader("Worker Console")
             worker = st.selectbox("Worker", AVAILABLE_WORKERS, index=0)
             phase = st.selectbox("Phase", ["auto", "initial", "post_ontology", "post_compare"], index=0)
+            if worker == "decide_rag_check":
+                st.caption("Phase controls which RAG controller checkpoint to run.")
+            else:
+                st.caption("Phase is ignored by this worker.")
+            _render_worker_guide(worker)
+            readiness = worker_prerequisite_status(orchestrator, worker)
+            _render_worker_readiness(readiness)
             force = st.checkbox("Force", value=False)
-            if st.button("Run worker", use_container_width=True):
+            if st.button("Run worker", use_container_width=True, disabled=not bool(readiness.get("ok"))):
                 with st.spinner(f"Running worker: {worker}"):
-                    _run_worker(orchestrator, worker, force=force, phase=phase)
+                    _run_worker(config, orchestrator, worker, force=force, phase=phase)
                 st.rerun()
             history = _worker_history()
             if history:
@@ -1254,6 +1677,8 @@ def main() -> None:
 
     active_job = _agent_job_state()
     if active_job and active_job.get("running"):
+        _maybe_append_agent_decision_events(config, active_job)
+        _maybe_append_agent_progress(config, orchestrator, active_job)
         time.sleep(1)
         st.rerun()
     if active_job and not active_job.get("running"):
