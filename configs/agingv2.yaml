@@ -9,6 +9,10 @@ inputs:
   # When set, OntoAnno skips parent clustering/marker recomputation and starts from annotation.
   # The Seurat metadata must already contain cluster_res.<resolution> columns for annotation.parent_res.
   marker_genes_dir: null
+  # Optional: import an existing GPTAnno annotation_parent*.rds and run RAG check/report from it.
+  # OntoAnno can infer sibling annotation_summary_scores*.csv, marker_genes/, prediction/,
+  # and *GPTannotated_parent*.rds when they sit in the same output folder.
+  annotation_parent_rds: null
 policy:
   ontology: true
   granularity: fine
@@ -22,6 +26,11 @@ llm:
     api_key: ${OPENAI_API_KEY}
     api_url: null
     system_prompt: null
+  external_evidence:
+    model: gpt-5
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
   pdfmarkers:
     model: gpt-5-nano
     env:

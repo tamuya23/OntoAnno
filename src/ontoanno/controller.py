@@ -110,11 +110,14 @@ def _initial_cluster_state(review_state: dict[str, Any], *, memory: dict[str, An
     recommended_label: str | None = None
     reason_codes: list[str] = []
 
-    if evidence_matches:
-        top_match = evidence_matches[0]
+    user_evidence_matches = [item for item in evidence_matches if not bool(item.get("is_literature"))]
+    literature_evidence_matches = [item for item in evidence_matches if bool(item.get("is_literature"))]
+
+    if user_evidence_matches:
+        top_match = user_evidence_matches[0]
         top_count = int(top_match.get("overlap_count", 0) or 0)
         top_ties = [
-            item for item in evidence_matches
+            item for item in user_evidence_matches
             if int(item.get("overlap_count", 0) or 0) == top_count
         ]
         if len(top_ties) == 1 and str(top_match.get("celltype") or "").strip():
@@ -129,6 +132,9 @@ def _initial_cluster_state(review_state: dict[str, Any], *, memory: dict[str, An
         else:
             next_action = "ask_user"
             reason_codes.append("memory_golden_rule_ambiguous")
+    elif literature_evidence_matches:
+        next_action = "build_ontology_relations"
+        reason_codes.append("literature_evidence_overlap")
     elif not current_label:
         next_action = "ask_user"
         reason_codes.append("missing_current_label")
@@ -200,7 +206,10 @@ def _merge_ontology_state(state: dict[str, Any], ontology_state: dict[str, Any])
         elif prompt_ready:
             next_action = "run_llm_compare"
             recommended_label = None
-            reason_codes.append("ontology_candidates_ready_for_llm")
+            if str(ontology_state.get("focus_strategy") or "") == "observed_raw":
+                reason_codes.append("annotation_candidates_ready_for_llm")
+            else:
+                reason_codes.append("ontology_candidates_ready_for_llm")
         else:
             next_action = "ask_user"
             recommended_label = None

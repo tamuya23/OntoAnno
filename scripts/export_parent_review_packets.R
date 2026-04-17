@@ -18,6 +18,22 @@ dir.create(packets_dir, recursive = TRUE, showWarnings = FALSE)
 unlink(file.path(packets_dir, "*.json"))
 
 read_cluster_counts <- function(spec_inputs, cluster_col) {
+  empty_counts <- data.frame(cluster = character(0), cell_count = integer(0), stringsAsFactors = FALSE)
+
+  parent_metadata_csv <- spec_inputs$parent_metadata_csv
+  if (!is.null(parent_metadata_csv) && file.exists(parent_metadata_csv)) {
+    metadata_df <- utils::read.csv(parent_metadata_csv, stringsAsFactors = FALSE, check.names = FALSE)
+    if (cluster_col %in% colnames(metadata_df)) {
+      cluster_values <- as.character(metadata_df[[cluster_col]])
+      cluster_values <- cluster_values[!is.na(cluster_values) & nzchar(cluster_values)]
+      if (length(cluster_values) > 0) {
+        counts <- as.data.frame(table(cluster_values), stringsAsFactors = FALSE)
+        colnames(counts) <- c("cluster", "cell_count")
+        return(counts)
+      }
+    }
+  }
+
   manual_labels_csv <- spec_inputs$manual_labels_csv
   if (!is.null(manual_labels_csv) && file.exists(manual_labels_csv)) {
     manual_df <- utils::read.csv(manual_labels_csv, stringsAsFactors = FALSE, check.names = FALSE)
@@ -32,18 +48,40 @@ read_cluster_counts <- function(spec_inputs, cluster_col) {
     }
   }
 
-  seurat_obj <- readRDS(spec_inputs$parent_seurat_rds)
+  parent_seurat_rds <- spec_inputs$parent_seurat_rds
+  if (is.null(parent_seurat_rds) || !nzchar(parent_seurat_rds) || !file.exists(parent_seurat_rds)) {
+    return(empty_counts)
+  }
+
+  seurat_obj <- readRDS(parent_seurat_rds)
   counts <- as.data.frame(table(as.character(seurat_obj@meta.data[[cluster_col]])), stringsAsFactors = FALSE)
   colnames(counts) <- c("cluster", "cell_count")
   counts
 }
 
-annotation_parent <- readRDS(spec$inputs$annotation_parent_rds)
-score_table <- utils::read.csv(spec$inputs$annotation_scores_csv, stringsAsFactors = FALSE)
+safe_normalize <- function(path) {
+  if (is.null(path) || !nzchar(path)) return(NULL)
+  normalizePath(path, winslash = "/", mustWork = FALSE)
+}
 
+annotation_parent <- readRDS(spec$inputs$annotation_parent_rds)
 best_resolution <- spec$annotation$best_resolution
 cluster_col <- spec$annotation$cluster_col
 policy <- spec$policy
+
+score_csv <- spec$inputs$annotation_scores_csv
+if (!is.null(score_csv) && nzchar(score_csv) && file.exists(score_csv)) {
+  score_table <- utils::read.csv(score_csv, stringsAsFactors = FALSE)
+} else {
+  score_table <- data.frame(
+    resolution = best_resolution,
+    sum_path_length = NA_real_,
+    avg_max_percentage = NA_real_,
+    min_max_percentage = NA_real_,
+    composite_score = NA_real_,
+    stringsAsFactors = FALSE
+  )
+}
 
 if (is.null(annotation_parent[[best_resolution]])) {
   stop("Best resolution not found in annotation_parent: ", best_resolution)
@@ -65,7 +103,12 @@ for (path in marker_files) {
   marker_file_map[[token]] <- normalizePath(path, winslash = "/", mustWork = FALSE)
 }
 
-prediction_files <- list.files(spec$inputs$prediction_dir, pattern = "^res_.*\\.pdf$", full.names = TRUE)
+prediction_dir <- spec$inputs$prediction_dir
+prediction_files <- if (!is.null(prediction_dir) && nzchar(prediction_dir) && dir.exists(prediction_dir)) {
+  list.files(prediction_dir, pattern = "^res_.*\\.pdf$", full.names = TRUE)
+} else {
+  character(0)
+}
 prediction_map <- list()
 for (path in prediction_files) {
   token <- sub("\\.pdf$", "", basename(path))
@@ -89,8 +132,9 @@ shared_context <- list(
   cluster_col = cluster_col,
   policy = policy,
   files = list(
-    annotation_parent_rds = normalizePath(spec$inputs$annotation_parent_rds, winslash = "/", mustWork = FALSE),
-    parent_seurat_rds = normalizePath(spec$inputs$parent_seurat_rds, winslash = "/", mustWork = FALSE),
+    annotation_parent_rds = safe_normalize(spec$inputs$annotation_parent_rds),
+    parent_seurat_rds = safe_normalize(spec$inputs$parent_seurat_rds),
+    parent_metadata_csv = safe_normalize(spec$inputs$parent_metadata_csv),
     markers_best_resolution = normalizePath(
       file.path(spec$inputs$markers_dir, paste0("markers_", best_resolution, ".rds")),
       winslash = "/",

@@ -279,22 +279,30 @@ def _resolve_cluster_decisions_from_controller(run_dir: Path, controller_index_p
 def _write_decision_files(output_dir: Path, decisions: list[dict[str, Any]]) -> tuple[Path, Path]:
     decisions_json = output_dir / "interactive_decisions.json"
     decisions_csv = output_dir / "interactive_decisions.csv"
-    dump_json(decisions_json, decisions)
+    export_decisions: list[dict[str, Any]] = []
+    for row in decisions:
+        export_decisions.append(
+            {
+                "cluster_id": row.get("cluster_id", ""),
+                "current_label": row.get("current_label", ""),
+                "final_label": row.get("final_label", ""),
+                "focus_candidates": row.get("focus_candidates", []),
+                "result_json": row.get("result_json", ""),
+            }
+        )
+    dump_json(decisions_json, export_decisions)
 
     fieldnames = [
         "cluster_id",
         "current_label",
         "final_label",
-        "selection_source",
-        "status",
-        "user_note",
         "focus_candidates",
         "result_json",
     ]
     with decisions_csv.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for row in decisions:
+        for row in export_decisions:
             item = dict(row)
             item["focus_candidates"] = " | ".join(item.get("focus_candidates", []))
             writer.writerow(item)

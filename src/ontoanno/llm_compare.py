@@ -68,7 +68,7 @@ def _structured_user_prompt(
     policy_lines: list[str] = []
     evidence_lines = [
         "Treat reference marker databases as supportive evidence only, not as a golden rule.",
-        "If user-provided marker memory is present, weigh it as researcher-curated supportive evidence.",
+        "If external marker memory is present, weigh user-provided evidence strongly and literature/PDF-derived evidence as supportive only.",
         "The candidate labels were generated from this dataset's own marker context and should be weighed seriously.",
         "Lack of overlap with reference markers does not automatically reject a candidate.",
         "Balance three things: dataset-specific cluster markers, ontology-constrained candidate labels, and reference markers.",
@@ -114,12 +114,18 @@ def _memory_evidence_block(
         return "", []
 
     lines = [
-        "User-provided marker memory (researcher-curated supportive evidence, not a golden rule):"
+        "External marker memory matching current/candidate labels:",
+        "User-provided evidence is researcher-curated and should be weighed strongly; literature/PDF-derived evidence is supportive only.",
     ]
     for item in matches:
         markers = ", ".join(item.get("markers", [])[:15]) or "none provided"
         note = str(item.get("note") or "").strip()
-        detail = f"- {item.get('celltype')}: markers={markers}"
+        source_type = str(item.get("source_type") or item.get("source") or "").strip()
+        evidence_count = item.get("evidence_count")
+        source_detail = f"source={source_type}" if source_type else "source=unknown"
+        if evidence_count:
+            source_detail += f", merged_entries={evidence_count}"
+        detail = f"- {item.get('celltype')} ({source_detail}): markers={markers}"
         if note:
             detail += f" | note={note}"
         lines.append(detail)

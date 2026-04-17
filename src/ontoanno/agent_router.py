@@ -53,6 +53,8 @@ def _router_system_prompt() -> str:
         "annotation preference changes such as granularity or resolution, researcher-provided external evidence, "
         "or extracting external evidence from papers/databases, "
         "translate it into a tool call. "
+        "If the previous result suggested human_review and the user confirms with words like yes, sure, proceed, or continue, "
+        "choose human_review rather than re-running run_RAG_check. "
         "Requests like 'look deeper into pericytes', 'drill down into fibroblasts', 'subcluster this cell type', "
         "or 'look inside this cell type' should normally be treated as run_subcluster_pipeline, not as a request for brainstorming options. "
         "Important distinction: resolution changes the clustering itself and can change cluster membership and marker genes; "
@@ -134,6 +136,21 @@ def _tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "run_RAG_check",
                 "description": "Run the current RAG-based check and review pipeline on the available annotations.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["reason"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "human_review",
+                "description": "Start or resume direct human review for unresolved clusters after automated RAG comparison. Use this when the user confirms a suggested human review step.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -434,6 +451,11 @@ def _intent_from_tool(
     if tool_name == "run_RAG_check":
         return {
             "intent_type": "run_RAG_check",
+            "raw_text": user_request,
+        }
+    if tool_name == "human_review":
+        return {
+            "intent_type": "human_review",
             "raw_text": user_request,
         }
     if tool_name == "run_report":

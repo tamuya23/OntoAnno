@@ -395,6 +395,16 @@ select_child_rows <- function(self_row, candidate_table, limit = 2) {
 build_focus_candidate_table <- function(candidate_table, granularity) {
   mapped_rows <- sort_candidate_rows(candidate_table[!is.na(candidate_table$clid), , drop = FALSE])
   self_row <- get_self_row(candidate_table)
+  observed_rows <- sort_candidate_rows(candidate_table)
+
+  if (nrow(observed_rows) >= 2) {
+    observed_rows <- observed_rows[seq_len(min(5, nrow(observed_rows))), , drop = FALSE]
+    return(list(
+      table = dedupe_candidate_rows(observed_rows),
+      strategy = "observed_raw",
+      self_label = if (!is.null(self_row)) candidate_display_label(self_row) else candidate_display_label(observed_rows[1, , drop = FALSE])
+    ))
+  }
 
   if (is.null(self_row)) {
     return(list(
@@ -550,6 +560,11 @@ build_comparison_brief <- function(packet, candidate_table, granularity) {
       if (length(unmapped_candidates) > 0) {
         paste0(" Unmapped surfaced labels for context only: ", paste(unmapped_candidates, collapse = ", "), ".")
       } else ""
+    )
+  } else if (focus_result$strategy == "observed_raw") {
+    sprintf(
+      "Compare annotation candidates surfaced across GPTAnno runs: %s. Some candidates may not map to Cell Ontology; do not add parent or sibling ontology labels for unmapped candidates. Choose the label best supported by the cluster markers and reference evidence.",
+      focus_text
     )
   } else if (focus_result$strategy == "parent+self") {
     sprintf(

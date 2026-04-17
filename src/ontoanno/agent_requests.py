@@ -16,6 +16,8 @@ from .worker_runtime import (
     has_parent_annotation_outputs,
     run_generate_report_worker,
     run_gptanno_worker_chain,
+    run_decide_rag_check_worker,
+    run_human_review_worker,
     run_rag_check_workers,
 )
 
@@ -435,6 +437,38 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
                 ),
                 "next_step": "human_review" if ask_user_count > 0 else "export_reviewed_parent_annotations",
                 "executed_workers": executed,
+            }
+        )
+        return result
+
+    if intent_type == "human_review":
+        if orchestrator is None:
+            result["message"] = "human_review requires an active orchestrator."
+            return result
+        controller_outputs, decide_worker = run_decide_rag_check_worker(
+            orchestrator,
+            phase="post_compare",
+            force=False,
+        )
+        ask_user_count, human_review_worker = run_human_review_worker(
+            controller_outputs,
+            run_dir=orchestrator.run_dir,
+        )
+        if ask_user_count > 0:
+            message = (
+                f"Human review is ready for {ask_user_count} unresolved cluster(s). "
+                "The automated RAG check will not be rerun; review decisions need to be collected explicitly."
+            )
+            next_step = "save_human_review_decisions"
+        else:
+            message = "No unresolved clusters currently require human review."
+            next_step = "export_reviewed_parent_annotations"
+        result.update(
+            {
+                "applied": True,
+                "message": message,
+                "next_step": next_step,
+                "executed_workers": [decide_worker, human_review_worker],
             }
         )
         return result

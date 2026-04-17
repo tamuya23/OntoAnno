@@ -103,10 +103,37 @@ def load_config(config_path: str | Path, repo_root: Path) -> dict[str, Any]:
     config["project"]["work_dir"] = _resolve_path(_require(config, "project.work_dir"), base_dir=base_dir)
 
     inputs = config.setdefault("inputs", {})
-    inputs["seurat_rds"] = _resolve_path(_require(config, "inputs.seurat_rds"), base_dir=base_dir)
+    bootstrap_parent = inputs.get("bootstrap_parent")
+    has_imported_parent = bool(
+        inputs.get("annotation_output_dir")
+        or inputs.get("annotation_parent_rds")
+        or (isinstance(bootstrap_parent, dict) and bootstrap_parent.get("annotation_output_dir"))
+        or (isinstance(bootstrap_parent, dict) and bootstrap_parent.get("annotation_parent_rds"))
+    )
+    if not inputs.get("seurat_rds") and not has_imported_parent:
+        _require(config, "inputs.seurat_rds")
+    inputs["seurat_rds"] = _resolve_path(inputs.get("seurat_rds"), base_dir=base_dir)
     inputs["manual_labels_csv"] = _resolve_path(inputs.get("manual_labels_csv"), base_dir=base_dir)
     inputs["pdf_dir"] = _resolve_path(inputs.get("pdf_dir"), base_dir=base_dir)
     inputs["marker_genes_dir"] = _resolve_path(inputs.get("marker_genes_dir"), base_dir=base_dir)
+    inputs["annotation_output_dir"] = _resolve_path(inputs.get("annotation_output_dir"), base_dir=base_dir)
+    inputs["annotation_parent_rds"] = _resolve_path(inputs.get("annotation_parent_rds"), base_dir=base_dir)
+    inputs["annotation_scores_csv"] = _resolve_path(inputs.get("annotation_scores_csv"), base_dir=base_dir)
+    inputs["parent_seurat_rds"] = _resolve_path(inputs.get("parent_seurat_rds"), base_dir=base_dir)
+    inputs["parent_metadata_csv"] = _resolve_path(inputs.get("parent_metadata_csv"), base_dir=base_dir)
+    inputs["markers_dir"] = _resolve_path(inputs.get("markers_dir"), base_dir=base_dir)
+    inputs["prediction_dir"] = _resolve_path(inputs.get("prediction_dir"), base_dir=base_dir)
+    if isinstance(bootstrap_parent, dict):
+        for key in (
+            "annotation_output_dir",
+            "annotation_parent_rds",
+            "annotation_scores_csv",
+            "parent_seurat_rds",
+            "parent_metadata_csv",
+            "markers_dir",
+            "prediction_dir",
+        ):
+            bootstrap_parent[key] = _resolve_path(bootstrap_parent.get(key), base_dir=base_dir)
     config["policy"] = normalize_policy(config.get("policy"))
 
     for baseline in config.get("evaluation", {}).get("baselines", []):
@@ -186,8 +213,12 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
     warnings.extend(policy_validation["warnings"])
 
     if needs_annotation:
-        for key in ("inputs.seurat_rds",):
-            path = Path(_require(config, key))
+        has_imported_parent = bool(config["inputs"].get("annotation_parent_rds"))
+        seurat_rds = config["inputs"].get("seurat_rds")
+        if not seurat_rds and not has_imported_parent:
+            errors.append("Missing required config key: inputs.seurat_rds")
+        elif seurat_rds:
+            path = Path(seurat_rds)
             if not path.exists():
                 errors.append(f"Missing required file: {path}")
         marker_genes_dir = config["inputs"].get("marker_genes_dir")
@@ -195,6 +226,30 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
             marker_path = Path(marker_genes_dir)
             if not marker_path.exists() or not marker_path.is_dir():
                 errors.append(f"Marker genes directory not found: {marker_path}")
+        annotation_output_dir = config["inputs"].get("annotation_output_dir")
+        if annotation_output_dir and not Path(annotation_output_dir).is_dir():
+            errors.append(f"Imported annotation output directory not found: inputs.annotation_output_dir={annotation_output_dir}")
+        for key in ("annotation_parent_rds", "annotation_scores_csv", "parent_seurat_rds", "parent_metadata_csv"):
+            value = config["inputs"].get(key)
+            if value and not Path(value).exists():
+                errors.append(f"Imported parent annotation file not found: inputs.{key}={value}")
+        for key in ("markers_dir", "prediction_dir"):
+            value = config["inputs"].get(key)
+            if value and not Path(value).is_dir():
+                errors.append(f"Imported parent annotation directory not found: inputs.{key}={value}")
+        bootstrap_parent = config["inputs"].get("bootstrap_parent")
+        if isinstance(bootstrap_parent, dict):
+            annotation_output_dir = bootstrap_parent.get("annotation_output_dir")
+            if annotation_output_dir and not Path(annotation_output_dir).is_dir():
+                errors.append(f"bootstrap_parent directory not found: annotation_output_dir={annotation_output_dir}")
+            for key in ("annotation_parent_rds", "annotation_scores_csv", "parent_seurat_rds", "parent_metadata_csv"):
+                value = bootstrap_parent.get(key)
+                if value and not Path(value).exists():
+                    errors.append(f"bootstrap_parent file not found: {key}={value}")
+            for key in ("markers_dir", "prediction_dir"):
+                value = bootstrap_parent.get(key)
+                if value and not Path(value).is_dir():
+                    errors.append(f"bootstrap_parent directory not found: {key}={value}")
 
     manual_labels_csv = config["inputs"].get("manual_labels_csv")
     if needs_evaluation and manual_labels_csv and not Path(manual_labels_csv).exists():

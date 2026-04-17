@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .review_packets import has_imported_parent_annotation_inputs
 from .utils import load_json
 
 
@@ -45,6 +46,9 @@ AVAILABLE_WORKERS = [
 
 
 def has_parent_annotation_outputs(orchestrator: Any) -> bool:
+    if has_imported_parent_annotation_inputs(orchestrator.config):
+        return True
+
     outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
     annotate_parent = outputs.get("annotate_parent", {})
     if isinstance(annotate_parent, dict) and bool(annotate_parent):
@@ -190,7 +194,9 @@ def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]
     elif worker == "build_review_packets":
         if not has_parent_annotation_outputs(orchestrator):
             missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
-            notes.append("Run parent annotation through assign_parent_labels first.")
+            notes.append(
+                "Run parent annotation through assign_parent_labels first, or configure inputs.annotation_parent_rds with existing GPTAnno annotation artifacts."
+            )
     elif worker == "decide_rag_check":
         if not _has_review_packets(orchestrator):
             missing = [str(orchestrator.run_dir / "review_packets" / "index.json")]
@@ -217,7 +223,7 @@ def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]
     elif worker == "generate_report":
         if not has_parent_annotation_outputs(orchestrator):
             missing = [str(parent_seurat_rds)]
-            notes.append("Run parent annotation first.")
+            notes.append("Run parent annotation first, or configure inputs.annotation_parent_rds with existing GPTAnno annotation artifacts.")
 
     missing = [item for item in missing if item]
     ok = len(missing) == 0

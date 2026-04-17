@@ -128,6 +128,8 @@ Important top-level sections:
   - `manual_labels_csv`
   - `pdf_dir`
   - `marker_genes_dir`
+  - `annotation_output_dir`
+  - `annotation_parent_rds`
 - `policy`
   - `ontology`
   - `granularity`
@@ -162,6 +164,17 @@ Optional precomputed marker input:
   - points to a folder containing GPTAnno-style `markers_res_<resolution>.rds` files, for example `markers_res_0.1.rds`
   - lets OntoAnno skip parent clustering and marker recomputation, then continue directly into parent annotation
   - requires the input Seurat object metadata to already contain matching `cluster_res.<resolution>` columns for every configured `annotation.parent_res`
+
+Optional imported parent annotation input:
+
+- `inputs.annotation_output_dir`
+  - points to an existing GPTAnno output folder, for example `/proj/bzou_lab/projects/GPTAnno_Experiment/MCA_20/output`
+  - this is the cleanest direct-RAG-check input when the folder already contains `annotation_parent*.rds`, `annotation_summary_scores*.csv`, `marker_genes/`, `prediction/`, and optional metadata/Seurat artifacts
+- `inputs.annotation_parent_rds`
+  - points to an existing GPTAnno `annotation_parent*.rds`, for example `/proj/bzou_lab/projects/GPTAnno_Experiment/PDAC_sn/output/annotation_parent_nonCM.rds`
+  - lets OntoAnno skip clustering, marker recomputation, and GPTAnno parent annotation, then start from `build_review_packets` / `run_RAG_check`
+  - automatically infers sibling `annotation_summary_scores*.csv`, `marker_genes/`, `prediction/`, `*_metadata.csv`, and `*GPTannotated_parent*.rds` when they sit in the same output folder
+  - optional explicit overrides are available as `inputs.annotation_scores_csv`, `inputs.parent_seurat_rds`, `inputs.parent_metadata_csv`, `inputs.markers_dir`, `inputs.prediction_dir`, `inputs.best_resolution`, and `inputs.cluster_col`
 
 Two fields matter especially for current agent behavior:
 

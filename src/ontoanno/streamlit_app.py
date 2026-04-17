@@ -23,7 +23,15 @@ from ontoanno.agent_memory import load_agent_memory
 from ontoanno.agent_router import route_agent_request
 from ontoanno.agent_session import reset_agent_session, session_path
 from ontoanno.config import load_config
+from ontoanno.external_evidence import (
+    ExternalEvidenceError,
+    _parse_page_ranges,
+    extract_literature_evidence_from_pdf,
+    save_uploaded_literature_pdf,
+)
+from ontoanno.interactive_cli import export_reviewed_parent_annotations
 from ontoanno.orchestrator import Orchestrator
+from ontoanno.review_packets import resolve_imported_parent_annotations
 from ontoanno.utils import dump_json, load_json
 from ontoanno.worker_runtime import AVAILABLE_WORKERS, run_named_worker, worker_prerequisite_status
 
@@ -192,7 +200,8 @@ def _resolution_value(value: Any) -> str:
 
 
 def _algorithm_best_parent_resolution(orchestrator: Orchestrator) -> str:
-    scores_csv = orchestrator.work_dir / "annotate_parent" / "annotation_summary_scores.csv"
+    imported = resolve_imported_parent_annotations(orchestrator.config)
+    scores_csv = Path(str(imported.get("annotation_scores_csv") or "")) if imported.get("annotation_scores_csv") else orchestrator.work_dir / "annotate_parent" / "annotation_summary_scores.csv"
     if not scores_csv.exists():
         return ""
     score_rows = _read_csv_rows(str(scores_csv))
@@ -231,6 +240,10 @@ def _selected_parent_resolution(config: dict[str, Any], orchestrator: Orchestrat
         selected = _resolution_value(payload.get("best_resolution_value") or payload.get("best_resolution"))
         if selected:
             return selected, "auto"
+    imported = resolve_imported_parent_annotations(config)
+    selected = _resolution_value(imported.get("best_resolution"))
+    if selected:
+        return selected, "imported"
     return "", ""
 
 
@@ -499,15 +512,18 @@ PHASE_WORKER_MAP: dict[str, list[str]] = {
 def _phase_completed(phase: str, orchestrator: Orchestrator) -> bool:
     outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
     stages = orchestrator.state.get("stages", {}) if isinstance(orchestrator.state.get("stages"), dict) else {}
+    imported = resolve_imported_parent_annotations(orchestrator.config)
     if phase == "Cluster":
         gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
         preflight_done = str((stages.get("preflight") or {}).get("status") or "") == "completed"
-        return bool(gptanno.get("cluster_parent_markers")) or preflight_done
+        imported_markers = imported.get("markers_dir")
+        return bool(gptanno.get("cluster_parent_markers")) or bool(imported_markers) or preflight_done
     if phase == "Annotate":
         annotate_parent = outputs.get("annotate_parent", {}) if isinstance(outputs.get("annotate_parent"), dict) else {}
         gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
         stage_done = str((stages.get("annotate_parent") or {}).get("status") or "") == "completed"
-        return bool(annotate_parent) or bool(gptanno.get("assign_parent_labels")) or stage_done
+        imported_parent = imported.get("annotation_parent_rds")
+        return bool(annotate_parent) or bool(gptanno.get("assign_parent_labels")) or bool(imported_parent) or stage_done
     if phase == "Subcluster":
         annotate_subclusters = outputs.get("annotate_subclusters", {}) if isinstance(outputs.get("annotate_subclusters"), dict) else {}
         gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
@@ -652,6 +668,277 @@ def _read_csv_rows(path_str: str) -> list[dict[str, Any]]:
         return []
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _cluster_sort_key(cluster_id: str) -> tuple[int, str]:
+    try:
+        return (0, f"{int(cluster_id):06d}")
+    except (TypeError, ValueError):
+        return (1, str(cluster_id))
+
+
+def _load_json_if_exists(path: Path) -> Any:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return load_json(path)
+    except Exception:
+        return None
+
+
+def _controller_state_rows(run_dir: Path) -> list[dict[str, Any]]:
+    index = _load_json_if_exists(run_dir / "controller" / "index.json")
+    if not isinstance(index, dict):
+        return []
+    states: list[dict[str, Any]] = []
+    for item in index.get("states", []):
+        if not isinstance(item, dict):
+            continue
+        state_path = Path(str(item.get("state_json") or ""))
+        state = _load_json_if_exists(state_path)
+        if isinstance(state, dict):
+            states.append(state)
+        else:
+            states.append(dict(item))
+    states.sort(key=lambda state: _cluster_sort_key(str(state.get("cluster_id") or "")))
+    return states
+
+
+def _split_pipe_values(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [part.strip() for part in str(value or "").split("|") if part.strip()]
+
+
+def _gene_key(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _dedupe_genes(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    genes: list[str] = []
+    for value in values:
+        gene = str(value or "").strip()
+        key = _gene_key(gene)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        genes.append(gene)
+    return genes
+
+
+def _state_markers(state: dict[str, Any]) -> list[str]:
+    markers = state.get("markers")
+    if isinstance(markers, list) and markers:
+        return _dedupe_genes(markers)
+    packet_path = Path(str(state.get("packet_json") or ""))
+    packet = _load_json_if_exists(packet_path)
+    if not isinstance(packet, dict):
+        return []
+    marker_rows = packet.get("markers", [])
+    if not isinstance(marker_rows, list):
+        return []
+    return _dedupe_genes([row.get("gene") for row in marker_rows if isinstance(row, dict)])
+
+
+def _relation_payload_for_state(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
+    relation_path = Path(str(state.get("relation_json") or ""))
+    if not relation_path.exists():
+        cluster_id = str(state.get("cluster_id") or "")
+        relation_path = run_dir / "ontology_relations" / "relations" / f"cluster-{cluster_id}.json"
+    payload = _load_json_if_exists(relation_path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _llm_payload_for_state(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
+    result_path = Path(str(state.get("result_json") or ""))
+    if not result_path.exists():
+        cluster_id = str(state.get("cluster_id") or "")
+        result_path = run_dir / "llm_compare" / "results" / f"cluster-{cluster_id}.json"
+    payload = _load_json_if_exists(result_path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _rag_overview_rows(states: list[dict[str, Any]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for state in states:
+        next_action = str(state.get("next_action") or "").strip()
+        candidates = _split_pipe_values(state.get("focus_candidates"))
+        if not candidates:
+            current = str(state.get("current_label") or state.get("label") or "").strip()
+            candidates = [current] if current else []
+        if next_action in {"build_ontology_relations", "run_llm_compare"}:
+            needs_check = "Yes"
+        elif next_action == "ask_user":
+            needs_check = "Human review"
+        else:
+            needs_check = "No"
+        rows.append(
+            {
+                "cluster": str(state.get("cluster_id") or ""),
+                "current_label": str(state.get("current_label") or state.get("label") or ""),
+                "potential_celltypes": " | ".join(candidates),
+                "needs_further_RAG_check": needs_check,
+            }
+        )
+    return rows
+
+
+def _reference_marker_rows(relation: dict[str, Any]) -> list[dict[str, Any]]:
+    reference_compare = relation.get("reference_compare", {}) if isinstance(relation.get("reference_compare"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    for candidate in reference_compare.get("candidates", []):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_name = str(candidate.get("candidate") or "")
+        for source_key, source_name in [("cellmarker", "CellMarker"), ("panglaodb", "PanglaoDB")]:
+            source_payload = candidate.get(source_key, {})
+            if not isinstance(source_payload, dict):
+                continue
+            markers = _dedupe_genes(
+                list(source_payload.get("top_markers", []) or [])
+                + list(source_payload.get("canonical_markers", []) or [])
+            )
+            rows.append(
+                {
+                    "candidate": candidate_name,
+                    "source": source_name,
+                    "reference_label": source_payload.get("reference_label") or "no hit",
+                    "overlap_count": source_payload.get("overlap_count", 0),
+                    "overlap_genes": ", ".join(_dedupe_genes(source_payload.get("overlap_genes", []) or [])) or "-",
+                    "marker_genes": ", ".join(markers[:30]) if markers else "-",
+                }
+            )
+    return rows
+
+
+def _candidate_reference_sets(relation: dict[str, Any], candidate_name: str) -> tuple[list[str], list[str]]:
+    reference_compare = relation.get("reference_compare", {}) if isinstance(relation.get("reference_compare"), dict) else {}
+    for candidate in reference_compare.get("candidates", []):
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("candidate") or "") != candidate_name:
+            continue
+        cellmarker = candidate.get("cellmarker", {}) if isinstance(candidate.get("cellmarker"), dict) else {}
+        panglaodb = candidate.get("panglaodb", {}) if isinstance(candidate.get("panglaodb"), dict) else {}
+        cellmarker_genes = _dedupe_genes(list(cellmarker.get("top_markers", []) or []) + list(cellmarker.get("canonical_markers", []) or []))
+        panglao_genes = _dedupe_genes(list(panglaodb.get("top_markers", []) or []) + list(panglaodb.get("canonical_markers", []) or []))
+        return cellmarker_genes, panglao_genes
+    return [], []
+
+
+def _render_marker_overlap_venn(cluster_genes: list[str], cellmarker_genes: list[str], panglao_genes: list[str]) -> None:
+    a = {_gene_key(gene) for gene in cluster_genes if _gene_key(gene)}
+    b = {_gene_key(gene) for gene in cellmarker_genes if _gene_key(gene)}
+    c = {_gene_key(gene) for gene in panglao_genes if _gene_key(gene)}
+    if not any([a, b, c]):
+        st.info("No marker sets are available for overlap visualization.")
+        return
+    counts = {
+        "a": len(a - b - c),
+        "b": len(b - a - c),
+        "c": len(c - a - b),
+        "ab": len((a & b) - c),
+        "ac": len((a & c) - b),
+        "bc": len((b & c) - a),
+        "abc": len(a & b & c),
+    }
+    svg = f"""
+    <svg viewBox="0 0 640 360" width="100%" height="360" role="img" aria-label="Marker overlap">
+      <rect width="640" height="360" fill="#ffffff"/>
+      <circle cx="255" cy="155" r="112" fill="#4f8cff" fill-opacity="0.30" stroke="#2f5fba" stroke-width="2"/>
+      <circle cx="385" cy="155" r="112" fill="#ff9f43" fill-opacity="0.32" stroke="#b86505" stroke-width="2"/>
+      <circle cx="320" cy="245" r="112" fill="#4caf50" fill-opacity="0.28" stroke="#2e7d32" stroke-width="2"/>
+      <text x="145" y="45" font-size="18" font-weight="700" fill="#2f5fba">Calculated markers</text>
+      <text x="398" y="45" font-size="18" font-weight="700" fill="#b86505">CellMarker</text>
+      <text x="282" y="345" font-size="18" font-weight="700" fill="#2e7d32">PanglaoDB</text>
+      <text x="215" y="138" font-size="22" font-weight="700">{counts['a']}</text>
+      <text x="412" y="138" font-size="22" font-weight="700">{counts['b']}</text>
+      <text x="314" y="290" font-size="22" font-weight="700">{counts['c']}</text>
+      <text x="313" y="126" font-size="22" font-weight="700">{counts['ab']}</text>
+      <text x="263" y="218" font-size="22" font-weight="700">{counts['ac']}</text>
+      <text x="365" y="218" font-size="22" font-weight="700">{counts['bc']}</text>
+      <text x="314" y="190" font-size="24" font-weight="800">{counts['abc']}</text>
+    </svg>
+    """
+    st.markdown(svg, unsafe_allow_html=True)
+    overlaps = {
+        "Calculated and CellMarker": sorted(a & b),
+        "Calculated and PanglaoDB": sorted(a & c),
+        "All three": sorted(a & b & c),
+    }
+    st.dataframe(
+        [{"overlap": key, "genes": ", ".join(value) or "-"} for key, value in overlaps.items()],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def _review_draft_path(run_dir: Path) -> Path:
+    return run_dir / "reviewed_parent" / "interactive_decisions_draft.json"
+
+
+def _rerun_app() -> None:
+    rerun = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+    if callable(rerun):
+        rerun()
+
+
+def _load_review_draft(run_dir: Path) -> dict[str, dict[str, Any]]:
+    payload = _load_json_if_exists(_review_draft_path(run_dir))
+    if not isinstance(payload, list):
+        return {}
+    return {
+        str(item.get("cluster_id") or ""): item
+        for item in payload
+        if isinstance(item, dict) and str(item.get("cluster_id") or "").strip()
+    }
+
+
+def _save_review_draft(run_dir: Path, decisions: dict[str, dict[str, Any]]) -> None:
+    rows = [decisions[key] for key in sorted(decisions, key=_cluster_sort_key)]
+    dump_json(_review_draft_path(run_dir), rows)
+
+
+def _human_review_states(states: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [state for state in states if str(state.get("next_action") or "") == "ask_user"]
+
+
+def _decision_from_state(state: dict[str, Any], *, final_label: str, selection_source: str, user_note: str = "") -> dict[str, Any]:
+    return {
+        "cluster_id": str(state.get("cluster_id") or ""),
+        "current_label": str(state.get("current_label") or state.get("label") or ""),
+        "final_label": final_label,
+        "selection_source": selection_source,
+        "status": str(state.get("llm_status") or ""),
+        "user_note": user_note,
+        "focus_candidates": _split_pipe_values(state.get("focus_candidates")),
+        "result_json": str(state.get("result_json") or ""),
+    }
+
+
+def _assemble_review_decisions(states: list[dict[str, Any]], draft: dict[str, dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    decisions: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for state in states:
+        cluster_id = str(state.get("cluster_id") or "")
+        current_label = str(state.get("current_label") or state.get("label") or "")
+        next_action = str(state.get("next_action") or "")
+        if next_action == "ask_user":
+            draft_decision = draft.get(cluster_id)
+            if not draft_decision:
+                missing.append(cluster_id)
+                continue
+            decisions.append(draft_decision)
+        elif next_action == "finalize_llm_choice":
+            final_label = str(state.get("recommended_label") or state.get("llm_best_candidate") or current_label)
+            decisions.append(_decision_from_state(state, final_label=final_label, selection_source="controller_llm_choose"))
+        elif next_action == "finalize_keep_current":
+            decisions.append(_decision_from_state(state, final_label=current_label, selection_source="controller_keep_current"))
+        else:
+            decisions.append(_decision_from_state(state, final_label=current_label, selection_source=f"controller_{next_action or 'unknown'}"))
+    decisions.sort(key=lambda item: _cluster_sort_key(str(item.get("cluster_id") or "")))
+    return decisions, missing
 
 
 def _cluster_annotation_rows(
@@ -876,10 +1163,11 @@ def _render_parent_annotation_tab(orchestrator: Orchestrator) -> None:
     outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
     gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
     parent_dir = orchestrator.work_dir / "annotate_parent"
-    scores_csv = str((parent_dir / "annotation_summary_scores.csv"))
+    imported = resolve_imported_parent_annotations(orchestrator.config)
+    scores_csv = str(imported.get("annotation_scores_csv") or (parent_dir / "annotation_summary_scores.csv"))
     mapping_csv = str((parent_dir / "parent_ontology_mapping.csv"))
     best_resolution_json = parent_dir / "best_parent_resolution.json"
-    prediction_dir = parent_dir / "prediction"
+    prediction_dir = Path(str(imported.get("prediction_dir") or (parent_dir / "prediction")))
     if not Path(scores_csv).exists():
         st.info("No parent annotation outputs recorded yet.")
         return
@@ -887,7 +1175,10 @@ def _render_parent_annotation_tab(orchestrator: Orchestrator) -> None:
     score_rows = _read_csv_rows(scores_csv)
     available_resolutions = [str(row.get("resolution") or "").strip() for row in score_rows if str(row.get("resolution") or "").strip()]
     selected_default = available_resolutions[0] if available_resolutions else "unknown"
-    if best_resolution_json.exists():
+    imported_best_resolution = str(imported.get("best_resolution") or "").strip()
+    if imported_best_resolution:
+        selected_default = imported_best_resolution
+    elif best_resolution_json.exists():
         best_payload = load_json(best_resolution_json)
         selected_default = str(best_payload.get("best_resolution") or selected_default)
     selected_resolution = st.selectbox(
@@ -906,28 +1197,34 @@ def _render_parent_annotation_tab(orchestrator: Orchestrator) -> None:
     st.markdown("**Resolution scores**")
     st.dataframe(score_rows, use_container_width=True, hide_index=True)
 
-    mapping_rows = _read_csv_rows(mapping_csv)
-    filtered_mapping = [
-        row for row in mapping_rows
-        if str(row.get("resolution") or "").strip() == selected_resolution
-    ]
+    mapping_rows = _read_csv_rows(mapping_csv) if Path(mapping_csv).exists() else []
+    filtered_mapping = [row for row in mapping_rows if str(row.get("resolution") or "").strip() == selected_resolution]
+    cluster_rows: list[dict[str, str]] = []
     if filtered_mapping:
         selected_rows = [row for row in filtered_mapping if str(row.get("role") or "").strip() == "selected"]
-        cluster_rows = [
-            {
-                "cluster": str(row.get("cluster") or ""),
-                "cleaned_label": str(row.get("cleaned_label") or row.get("label") or ""),
-            }
-            for row in selected_rows
-        ]
+        cluster_rows = [{"cluster": str(row.get("cluster") or ""), "cleaned_label": str(row.get("cleaned_label") or row.get("label") or "")} for row in selected_rows]
+    elif imported.get("annotation_parent_rds"):
+        review_summary = orchestrator.run_dir / "review_packets" / "summary.csv"
+        if review_summary.exists():
+            cluster_rows = [
+                {"cluster": str(row.get("cluster_id") or ""), "cleaned_label": str(row.get("assigned_label") or "")}
+                for row in _read_csv_rows(str(review_summary))
+            ]
+    if cluster_rows:
         st.markdown("**Cluster annotation results**")
         st.dataframe(cluster_rows[:100], use_container_width=True, hide_index=True)
     else:
-        st.info("No parent annotation table rows found for the selected resolution.")
+        st.info("No standardized cluster annotation table is available yet. Run build_review_packets to generate a lightweight table from imported annotations.")
 
     st.markdown("**Prediction figure**")
-    preview_png, preview_error = _ensure_parent_annotation_preview(orchestrator, selected_resolution)
     prediction_path = next((path for path in _prediction_figure_candidate_paths(prediction_dir, selected_resolution) if path.exists()), None)
+    if imported.get("annotation_parent_rds"):
+        preview_png = None
+        preview_error = None
+    else:
+        preview_png, preview_error = _ensure_parent_annotation_preview(orchestrator, selected_resolution)
+    if imported.get("annotation_parent_rds") and prediction_path is not None:
+        preview_error = None
     if preview_png is not None:
         st.image(str(preview_png), caption=f"Parent annotation preview for {selected_resolution}")
     elif prediction_path is not None and prediction_path.suffix.lower() in {".png", ".jpg", ".jpeg"}:
@@ -1122,31 +1419,144 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
     ontology_relations = outputs.get("ontology_relations", {}) if isinstance(outputs.get("ontology_relations"), dict) else {}
     llm_compare = outputs.get("llm_compare", {}) if isinstance(outputs.get("llm_compare"), dict) else {}
     controller = outputs.get("controller", {}) if isinstance(outputs.get("controller"), dict) else {}
-    if not any([reviewed, review_packets, ontology_relations, llm_compare, controller]):
+    rag_files_exist = any(
+        (orchestrator.run_dir / rel_path).exists()
+        for rel_path in [
+            "controller/index.json",
+            "review_packets/index.json",
+            "ontology_relations/index.json",
+            "llm_compare/index.json",
+            "reviewed_parent/reviewed_parent.outputs.json",
+        ]
+    )
+    if not any([reviewed, review_packets, ontology_relations, llm_compare, controller, rag_files_exist]):
         st.info("No RAG review outputs recorded yet.")
         return
 
     reviewed_csv = str(reviewed.get("metadata_csv") or "")
-    reviewed_decisions = str(reviewed.get("cluster_decisions_csv") or "")
+    reviewed_decisions = str(reviewed.get("cluster_decisions_csv") or reviewed.get("decisions_csv") or "")
     review_packets_summary = str(review_packets.get("summary_csv") or "")
     ontology_summary = str(ontology_relations.get("summary_csv") or "")
     llm_compare_summary = str(llm_compare.get("summary_csv") or "")
     controller_summary = str(controller.get("summary_csv") or "")
+    if not review_packets_summary:
+        review_packets_summary = str(orchestrator.run_dir / "review_packets" / "summary.csv")
+    if not ontology_summary:
+        ontology_summary = str(orchestrator.run_dir / "ontology_relations" / "summary.csv")
+    if not llm_compare_summary:
+        llm_compare_summary = str(orchestrator.run_dir / "llm_compare" / "summary.csv")
+    if not controller_summary:
+        controller_summary = str(orchestrator.run_dir / "controller" / "summary.csv")
 
-    rag_col1, rag_col2, rag_col3, rag_col4 = st.columns(4)
-    with rag_col1:
-        st.metric("Review packets", _csv_row_count(review_packets_summary) or 0)
-    with rag_col2:
-        st.metric("Candidate map rows", _csv_row_count(ontology_summary) or 0)
-    with rag_col3:
-        st.metric("LLM compare rows", _csv_row_count(llm_compare_summary) or 0)
-    with rag_col4:
-        st.metric("Reviewed decisions", _csv_row_count(reviewed_decisions) or 0)
+    states = _controller_state_rows(orchestrator.run_dir)
+    overview_rows = _rag_overview_rows(states)
+    human_states = _human_review_states(states)
+    draft = _load_review_draft(orchestrator.run_dir)
 
-    if reviewed_decisions:
-        _render_preview_table("Reviewed cluster decisions", reviewed_decisions, limit=12)
+    st.markdown("**RAG review overview**")
+    if overview_rows:
+        st.dataframe(overview_rows, use_container_width=True, hide_index=True)
     elif controller_summary:
-        _render_preview_table("Controller summary", controller_summary, limit=12)
+        fallback_rows = _read_csv_rows(controller_summary)
+        slim_rows = [
+            {
+                "cluster": str(row.get("cluster_id") or ""),
+                "current_label": str(row.get("current_label") or ""),
+                "potential_celltypes": str(row.get("focus_candidates") or ""),
+                "needs_further_RAG_check": "Human review" if str(row.get("next_action") or "") == "ask_user" else ("Yes" if str(row.get("next_action") or "") in {"build_ontology_relations", "run_llm_compare"} else "No"),
+            }
+            for row in fallback_rows
+        ]
+        st.dataframe(slim_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("Controller summary is not available yet.")
+
+    if human_states:
+        st.markdown("**Interactive human review**")
+        st.caption("Each unresolved cluster is reviewed once. Saved choices are kept as a draft until all unresolved clusters have a decision.")
+        progress_done = len([state for state in human_states if str(state.get("cluster_id") or "") in draft])
+        st.progress(progress_done / len(human_states), text=f"Human review decisions saved: {progress_done}/{len(human_states)}")
+        cluster_options = [str(state.get("cluster_id") or "") for state in human_states]
+        selected_cluster = st.selectbox(
+            "Cluster requiring human review",
+            cluster_options,
+            index=0,
+            key="rag_human_review_cluster",
+        )
+        selected_state = next((state for state in human_states if str(state.get("cluster_id") or "") == selected_cluster), human_states[0])
+        selected_relation = _relation_payload_for_state(orchestrator.run_dir, selected_state)
+        selected_llm = _llm_payload_for_state(orchestrator.run_dir, selected_state)
+        selected_markers = _state_markers(selected_state)
+        selected_candidates = _split_pipe_values(selected_state.get("focus_candidates"))
+        current_label = str(selected_state.get("current_label") or selected_state.get("label") or "")
+        if current_label and current_label not in selected_candidates:
+            selected_candidates = [current_label, *selected_candidates]
+        if not selected_candidates:
+            selected_candidates = [current_label or "unannotated"]
+
+        st.write(f"Current label: `{current_label or 'unannotated'}`")
+        st.write("Calculated marker genes: " + (", ".join(selected_markers[:20]) if selected_markers else "not available"))
+        selected_parsed = selected_llm.get("parsed_response", {}) if isinstance(selected_llm.get("parsed_response"), dict) else {}
+        llm_reason = str(selected_state.get("llm_reason") or selected_parsed.get("reason") or "")
+        if llm_reason:
+            st.info(llm_reason)
+
+        saved_decision = draft.get(selected_cluster, {})
+        saved_label = str(saved_decision.get("final_label") or current_label or selected_candidates[0])
+        default_index = selected_candidates.index(saved_label) if saved_label in selected_candidates else 0
+        selected_label = st.selectbox(
+            "Final annotation for this cluster",
+            selected_candidates,
+            index=default_index,
+            key=f"rag_human_review_label_{selected_cluster}",
+        )
+        override_label = st.text_input(
+            "Optional custom final label",
+            value="" if saved_label in selected_candidates else saved_label,
+            key=f"rag_human_review_override_{selected_cluster}",
+            help="Use this only when none of the candidate labels is acceptable.",
+        )
+        note = st.text_area(
+            "Review note",
+            value=str(saved_decision.get("user_note") or ""),
+            key=f"rag_human_review_note_{selected_cluster}",
+            height=90,
+        )
+        final_label = override_label.strip() or selected_label
+        save_col, export_col = st.columns(2)
+        with save_col:
+            if st.button("Save decision for this cluster", key=f"rag_human_review_save_{selected_cluster}"):
+                draft[selected_cluster] = _decision_from_state(
+                    selected_state,
+                    final_label=final_label,
+                    selection_source="streamlit_human_review",
+                    user_note=note,
+                )
+                _save_review_draft(orchestrator.run_dir, draft)
+                st.success(f"Saved decision for cluster {selected_cluster}: {final_label}")
+                _rerun_app()
+        decisions, missing = _assemble_review_decisions(states, draft)
+        with export_col:
+            if st.button(
+                "Export reviewed annotations",
+                key="rag_human_review_export",
+                disabled=bool(missing),
+                help="Enabled after every unresolved cluster has a saved decision.",
+            ):
+                try:
+                    outputs = export_reviewed_parent_annotations(
+                        config=orchestrator.config,
+                        run_dir=orchestrator.run_dir,
+                        decisions=decisions,
+                    )
+                    orchestrator.manifest.setdefault("outputs", {})["reviewed_parent"] = outputs
+                    orchestrator._save_manifest()
+                    st.success("Reviewed parent annotations exported.")
+                    _rerun_app()
+                except Exception as exc:
+                    st.error(f"Export failed: {exc}")
+        if missing:
+            st.caption("Remaining unresolved clusters: " + ", ".join(sorted(missing, key=_cluster_sort_key)))
 
     reviewed_preview_png, reviewed_preview_error = _ensure_reviewed_parent_preview(
         orchestrator,
@@ -1158,14 +1568,59 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
     elif reviewed_preview_error and reviewed:
         st.info(reviewed_preview_error)
 
-    if review_packets_summary:
-        _render_preview_table("Review packet summary", review_packets_summary, limit=10)
-    if ontology_summary:
-        _render_preview_table("Candidate map summary", ontology_summary, limit=10)
-    if llm_compare_summary:
-        _render_preview_table("LLM compare summary", llm_compare_summary, limit=10)
-    if reviewed_csv:
-        _render_preview_table("Reviewed parent metadata", reviewed_csv, limit=10)
+    st.markdown("**RAG marker evidence**")
+    evidence_states = [
+        state for state in states
+        if _relation_payload_for_state(orchestrator.run_dir, state)
+    ]
+    if evidence_states:
+        evidence_cluster_options = [str(state.get("cluster_id") or "") for state in evidence_states]
+        selected_evidence_cluster = st.selectbox(
+            "Cluster evidence view",
+            evidence_cluster_options,
+            index=0,
+            key="rag_evidence_cluster",
+        )
+        state = next((item for item in evidence_states if str(item.get("cluster_id") or "") == selected_evidence_cluster), evidence_states[0])
+        relation = _relation_payload_for_state(orchestrator.run_dir, state)
+        llm_payload = _llm_payload_for_state(orchestrator.run_dir, state)
+        cluster_genes = _state_markers(state)
+        st.write("Calculated marker genes: " + (", ".join(cluster_genes[:30]) if cluster_genes else "not available"))
+        ref_rows = _reference_marker_rows(relation)
+        if ref_rows:
+            st.dataframe(ref_rows, use_container_width=True, hide_index=True)
+            candidates = _split_pipe_values(state.get("focus_candidates"))
+            if not candidates:
+                candidates = sorted({str(row.get("candidate") or "") for row in ref_rows if str(row.get("candidate") or "").strip()})
+            selected_candidate = st.selectbox(
+                "Marker-overlap candidate",
+                candidates,
+                index=0,
+                key=f"rag_overlap_candidate_{selected_evidence_cluster}",
+            )
+            cellmarker_genes, panglao_genes = _candidate_reference_sets(relation, selected_candidate)
+            _render_marker_overlap_venn(cluster_genes, cellmarker_genes, panglao_genes)
+        else:
+            st.info("No reference marker rows are available for this cluster.")
+        parsed = llm_payload.get("parsed_response", {}) if isinstance(llm_payload.get("parsed_response"), dict) else {}
+        if parsed:
+            with st.expander("LLM comparison note", expanded=False):
+                st.write(str(parsed.get("reason") or ""))
+                supporting = parsed.get("supporting_markers", [])
+                weakening = parsed.get("weakening_markers", [])
+                if supporting:
+                    st.write("Supporting markers: " + ", ".join(str(item) for item in supporting))
+                if weakening:
+                    st.write("Weakening markers: " + ", ".join(str(item) for item in weakening))
+    else:
+        st.info("No per-cluster RAG evidence is available yet.")
+
+    if reviewed_decisions and Path(reviewed_decisions).exists():
+        with st.expander("Reviewed decisions", expanded=False):
+            _render_preview_table("Reviewed cluster decisions", reviewed_decisions, limit=20)
+    if reviewed_csv and Path(reviewed_csv).exists():
+        with st.expander("Reviewed parent metadata", expanded=False):
+            _render_preview_table("Reviewed parent metadata", reviewed_csv, limit=10)
 
     with st.expander("Raw RAG review files"):
         if reviewed_preview_png is not None:
@@ -1258,6 +1713,88 @@ def _render_worker_readiness(readiness: dict[str, Any]) -> None:
 
 
 def _render_external_evidence_tab(config: dict[str, Any]) -> None:
+    st.markdown("**Extract literature evidence from uploaded PDF**")
+    st.caption(
+        "Text evidence is extracted with GPTAnno/PDF2markers for stricter sentence-level filtering. Selected pages are also rendered as images for figure-specific marker evidence from dot plots, heatmaps, UMAP labels, and legends."
+    )
+    uploaded_pdf = st.file_uploader(
+        "Upload literature PDF",
+        type=["pdf"],
+        key="external_evidence_pdf_upload",
+    )
+    upload_col1, upload_col2, upload_col3 = st.columns([2, 1, 1])
+    with upload_col1:
+        page_range = st.text_input(
+            "Pages to inspect",
+            value="1-6",
+            key="external_evidence_pdf_pages",
+            help="Use a comma/range list, for example 1-4,7,10. Choose pages with figures or marker tables when possible.",
+        )
+    with upload_col2:
+        dpi = st.number_input(
+            "Render DPI",
+            min_value=100,
+            max_value=220,
+            value=150,
+            step=25,
+            key="external_evidence_pdf_dpi",
+        )
+    with upload_col3:
+        st.write("")
+        st.write("")
+        extract_clicked = st.button(
+            "Extract PDF evidence",
+            disabled=uploaded_pdf is None,
+            key="external_evidence_extract_pdf",
+        )
+    if extract_clicked and uploaded_pdf is not None:
+        pages = _parse_page_ranges(page_range, default_max_pages=6)
+        if not pages:
+            st.error("No valid pages selected.")
+        elif len(pages) > 10:
+            st.error("Please inspect at most 10 pages per extraction to keep the image LLM call stable.")
+        else:
+            try:
+                pdf_path = save_uploaded_literature_pdf(
+                    config=config,
+                    filename=uploaded_pdf.name,
+                    data=uploaded_pdf.getvalue(),
+                )
+                with st.spinner("Extracting text evidence with PDF2markers and figure evidence with the vision LLM..."):
+                    result = extract_literature_evidence_from_pdf(
+                        config=config,
+                        pdf_path=pdf_path,
+                        pages=pages,
+                        dpi=int(dpi),
+                    )
+                st.success(
+                    "Extracted "
+                    f"{result.get('evidence_count', 0)} literature evidence entrie(s): "
+                    f"{result.get('text_evidence_count', 0)} from PDF2markers text, "
+                    f"{result.get('image_evidence_count', 0)} from page images."
+                )
+                if result.get("evidence"):
+                    st.dataframe(
+                        [
+                            {
+                                "source_type": item.get("source_type", ""),
+                                "celltype": item.get("celltype", ""),
+                                "original_celltype": item.get("original_celltype", ""),
+                                "markers": ", ".join(item.get("markers", [])),
+                                "figure_or_page": item.get("figure_or_page", ""),
+                                "confidence": item.get("confidence", ""),
+                                "note": item.get("note", ""),
+                            }
+                            for item in result["evidence"]
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+            except ExternalEvidenceError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"PDF evidence extraction failed: {exc}")
+
     memory = load_agent_memory(config)
     custom_markers = memory.get("custom_markers", []) if isinstance(memory.get("custom_markers"), list) else []
     custom_celltypes = memory.get("custom_celltypes", []) if isinstance(memory.get("custom_celltypes"), list) else []
@@ -1270,8 +1807,14 @@ def _render_external_evidence_tab(config: dict[str, Any]) -> None:
         row = {
             "type": "marker",
             "celltype": str(item.get("celltype") or ""),
+            "original_celltype": str(item.get("original_celltype") or ""),
             "markers": ", ".join(str(x) for x in item.get("markers", []) if str(x).strip()),
             "note": str(item.get("note") or ""),
+            "source": str(item.get("source") or "user"),
+            "source_type": str(item.get("source_type") or ""),
+            "evidence_count": item.get("evidence_count") or "",
+            "figure_or_page": str(item.get("figure_or_page") or ""),
+            "confidence": str(item.get("confidence") or ""),
         }
         source = str(item.get("source") or "user").strip().lower()
         if source in {"pdfmarker", "literature"}:
@@ -1285,8 +1828,14 @@ def _render_external_evidence_tab(config: dict[str, Any]) -> None:
         row = {
             "type": "celltype",
             "celltype": str(item.get("celltype") or ""),
+            "original_celltype": str(item.get("original_celltype") or ""),
             "markers": ", ".join(str(x) for x in item.get("markers", []) if str(x).strip()),
             "note": str(item.get("note") or ""),
+            "source": str(item.get("source") or "user"),
+            "source_type": str(item.get("source_type") or ""),
+            "evidence_count": item.get("evidence_count") or "",
+            "figure_or_page": str(item.get("figure_or_page") or ""),
+            "confidence": str(item.get("confidence") or ""),
         }
         source = str(item.get("source") or "user").strip().lower()
         if source in {"pdfmarker", "literature"}:
