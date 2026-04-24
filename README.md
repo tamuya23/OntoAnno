@@ -1,551 +1,329 @@
 # OntoAnno
 
-OntoAnno is a Python orchestration layer around the vendored `GPTAnno/` R package. It provides:
+> Ontology-aware single-cell annotation workbench with chat-based control, RAG review, and report generation.
 
-- a stage-based CLI for reproducible runs
-- an agent router that maps natural-language requests to high-level actions
-- a normalized worker runtime for debugging and partial reruns
-- a local Streamlit workbench for interactive use
+OntoAnno is a local web app for running and reviewing single-cell annotation workflows. It is designed for researchers who want to work through an interface, not through a long list of commands.
 
-The runtime model is simple:
+![OntoAnno Interface Overview](figures/ontoanno_interface_overview.png)
 
-- Python handles routing, controller logic, state, memory, UI, and subprocess orchestration
-- R handles the heavy annotation workers and Seurat-based plotting/export
+## Container Quick Start
 
-OntoAnno writes only inside this repository:
+OntoAnno supports two container runtimes:
 
-- `work/<project>/...` for durable project artifacts
-- `runs/<run_id>/...` for run-local state, logs, manifests, review artifacts, and reports
+- `Docker`: recommended for laptops, workstations, and regular Linux servers
+- `Apptainer`: recommended for HPC environments such as Longleaf
 
-## Environment
+Both runtimes are meant to use the same container image.
 
-OntoAnno needs both a Python environment and an R environment.
+## Docker Quick Start
 
-The intended setup is:
+If you want a containerized setup with both Python and R bundled together:
 
-- one Python environment for `ontoanno`
-- one R installation with the packages needed by `GPTAnno`
-- `ONTOANNO_RSCRIPT` used to bridge Python to that R environment
-
-### Python
-
-Minimum:
-
-- Python `>=3.11`
-- packages from `pyproject.toml`
-
-Install the package in editable mode:
+### Step 1: Prepare the Docker workspace
 
 ```bash
-cd /proj/bzou_lab/projects/OntoAnno
-pip install -e .
+bash docker_setup.sh
 ```
 
-If you want the Streamlit UI:
+This will:
+
+- create `.env` if it does not exist
+- create `data/`, `work/`, and `runs/`
+- prepare the folder layout for Docker
+
+### Step 2: Edit `.env`
+
+Set at least:
+
+- `OPENAI_API_KEY`
+- `ONTOANNO_CONFIG`
+
+### Step 3: Put your data in `./data`
+
+- host folder `./data` is mounted inside the container as `/data`
+- host folder `./work` is mounted inside the container as `/work`
+
+### Step 4: Choose a config template
+
+- [`docker_import_template.yaml`](/proj/bzou_lab/projects/OntoAnno/configs/docker_import_template.yaml): start from an existing annotation output folder
+- [`docker_fresh_template.yaml`](/proj/bzou_lab/projects/OntoAnno/configs/docker_fresh_template.yaml): start from a raw Seurat object
+
+Inside Docker, your config must use container paths such as:
+
+- `/data/...`
+- `/work/...`
+
+### Step 5: Start OntoAnno
 
 ```bash
-pip install -e .[ui]
+./start_ontoanno_docker.sh
 ```
 
-Current Python package dependencies are intentionally small:
+Then open:
 
-- `PyYAML`
-- `Jinja2`
-- `Pillow`
-- optional `streamlit>=1.40`
+```text
+http://127.0.0.1:8501
+```
 
-### R
+Important:
 
-OntoAnno does not manage the R environment for you. The `Rscript` binary you point at must already have the packages required by:
+- the container already includes its own Python and R environments
+- the first Docker build may take a while because it installs R packages
 
-- `GPTAnno/`
-- `scripts/run_annotation.R`
-- `scripts/run_gptanno_tool.R`
-- `scripts/export_report_figures.R`
-- `scripts/export_reviewed_parent_annotations.R`
+## Apptainer Quick Start
 
-In practice that means the R side must already be able to run:
+If your system uses `apptainer` instead of `docker`:
 
-- `Seurat`
-- `ggplot2`
-- `jsonlite`
-- and the packages imported by the vendored `GPTAnno` code
-
-Set the R entrypoint explicitly when it is not on `PATH`:
+### Step 1: Prepare the Apptainer workspace
 
 ```bash
-export ONTOANNO_RSCRIPT=/nas/longleaf/rhel9/apps/r/4.4.0/bin/Rscript
+bash apptainer_setup.sh
 ```
 
-### Environment Variables
+This will:
 
-Required for OpenAI-backed routes/workers:
+- create `.env` if it does not exist
+- create `data/`, `work/`, `runs/`, and `.apptainer/`
+- prepare the folder layout for Apptainer
+
+### Step 2: Edit `.env`
+
+Set at least:
+
+- `OPENAI_API_KEY`
+- `ONTOANNO_CONFIG`
+- `ONTOANNO_IMAGE`
+
+`ONTOANNO_IMAGE` should point to a published Docker image, for example:
+
+```text
+docker://ghcr.io/tamuya23/ontoanno:latest
+```
+
+### Step 3: Put your data in `./data`
+
+- host folder `./data` is mounted inside the container as `/data`
+- host folder `./work` is mounted inside the container as `/work`
+
+### Step 4: Start OntoAnno
 
 ```bash
-export OPENAI_API_KEY=...
+./start_ontoanno_apptainer.sh
 ```
 
-Optional:
+The first run will pull the image into `.apptainer/ontoanno_latest.sif`.
 
-```bash
-export OPENAI_BASE_URL=...
-export ONTOANNO_CL_OBO=/path/to/cl.obo
+Then open:
+
+```text
+http://127.0.0.1:8501
 ```
 
-`ONTOANNO_CL_OBO` avoids re-fetching the Cell Ontology OBO and is the cleanest setup for cluster review and ontology mapping.
+Important:
 
-### Validate First
+- paths inside the container must use `/data/...` and `/work/...`
+- Apptainer is the better option for HPC systems that do not allow Docker
+- the image only needs to be pulled once unless you want to refresh it
 
-Before running anything substantial:
+## Publish the Container Image
 
-```bash
-python3 ontoanno validate --config configs/pdac_sn.yaml
+If you push this repository to GitHub, the container image can be built automatically by GitHub Actions.
+
+The workflow file is:
+
+- [.github/workflows/build-container.yml](/proj/bzou_lab/projects/OntoAnno/.github/workflows/build-container.yml)
+
+By default, it publishes to:
+
+```text
+ghcr.io/tamuya23/ontoanno:latest
 ```
 
-This checks:
+How it works:
 
-- required config keys
-- core input files
-- vendored helper scripts
-- policy validity
-- PDF inputs if configured
-
-## Configuration
-
-A single YAML file is the user-maintained source of truth. Python loads it, resolves environment variables, and generates stage- or worker-specific specs for R.
-
-Example:
-
-- [configs/pdac_sn.yaml](/proj/bzou_lab/projects/OntoAnno/configs/pdac_sn.yaml)
-
-Important top-level sections:
-
-- `project`
-  - `name`
-  - `work_dir`
-- `inputs`
-  - `seurat_rds`
-  - `manual_labels_csv`
-  - `pdf_dir`
-  - `marker_genes_dir`
-  - `annotation_output_dir`
-  - `annotation_parent_rds`
-- `policy`
-  - `ontology`
-  - `granularity`
-  - `fallback`
-  - `review_tie`
-  - `review_nomatch`
-- `llm`
-  - `annotation`
-  - `pdfmarkers`
-- `annotation`
-  - `species`
-  - `parent_res`
-  - `sub_res`
-  - `preprocess`
-  - `min_cell_count`
-  - `tissue_name`
-  - `n_runs_parent`
-  - `n_runs_sub`
-  - `forced_parent_resolution`
-- `alignment`
-  - `celltypes_to_subcluster`
-  - `user_restrict_to`
-  - `combine_restrictions`
-  - `manual_resolution_map`
-  - `on_missing_decision`
-- `evaluation`
-- `report`
-
-Optional precomputed marker input:
-
-- `inputs.marker_genes_dir`
-  - points to a folder containing GPTAnno-style `markers_res_<resolution>.rds` files, for example `markers_res_0.1.rds`
-  - lets OntoAnno skip parent clustering and marker recomputation, then continue directly into parent annotation
-  - requires the input Seurat object metadata to already contain matching `cluster_res.<resolution>` columns for every configured `annotation.parent_res`
-
-Optional imported parent annotation input:
-
-- `inputs.annotation_output_dir`
-  - points to an existing GPTAnno output folder, for example `/proj/bzou_lab/projects/GPTAnno_Experiment/MCA_20/output`
-  - this is the cleanest direct-RAG-check input when the folder already contains `annotation_parent*.rds`, `annotation_summary_scores*.csv`, `marker_genes/`, `prediction/`, and optional metadata/Seurat artifacts
-- `inputs.annotation_parent_rds`
-  - points to an existing GPTAnno `annotation_parent*.rds`, for example `/proj/bzou_lab/projects/GPTAnno_Experiment/PDAC_sn/output/annotation_parent_nonCM.rds`
-  - lets OntoAnno skip clustering, marker recomputation, and GPTAnno parent annotation, then start from `build_review_packets` / `run_RAG_check`
-  - automatically infers sibling `annotation_summary_scores*.csv`, `marker_genes/`, `prediction/`, `*_metadata.csv`, and `*GPTannotated_parent*.rds` when they sit in the same output folder
-  - optional explicit overrides are available as `inputs.annotation_scores_csv`, `inputs.parent_seurat_rds`, `inputs.parent_metadata_csv`, `inputs.markers_dir`, `inputs.prediction_dir`, `inputs.best_resolution`, and `inputs.cluster_col`
-
-Two fields matter especially for current agent behavior:
-
-- `annotation.parent_res`
-  - the set of parent resolutions the algorithm will try or has been told to try
-- `annotation.forced_parent_resolution`
-  - the currently forced/selected parent resolution when applicable
+1. Push to the `main` branch, or manually trigger the workflow in GitHub Actions.
+2. GitHub builds the Docker image.
+3. GitHub publishes the image to GitHub Container Registry.
+4. Docker users can pull the image directly.
+5. Apptainer users can pull the same image as a `.sif`.
 
 ## Quick Start
 
-Typical setup:
+### Step 1: Open the project folder
 
 ```bash
 cd /proj/bzou_lab/projects/OntoAnno
-export ONTOANNO_RSCRIPT=/nas/longleaf/rhel9/apps/r/4.4.0/bin/Rscript
-export OPENAI_API_KEY=...
-python3 ontoanno validate --config configs/pdac_sn.yaml
-python3 ontoanno ui --config configs/pdac_sn.yaml
 ```
 
-For most users, the main entrypoint is the local Streamlit workbench. The CLI remains available underneath it, but it is primarily a developer/debugging interface now.
-
-## Streamlit Workbench
-
-Start it with:
+### Step 2: Run the one-time setup
 
 ```bash
-python3 ontoanno ui --config configs/pdac_sn.yaml
+bash setup.sh
 ```
 
-Useful flags:
+This will:
+
+- install OntoAnno
+- install the web interface
+- automatically detect your `Rscript` path and let you confirm or edit it
+- ask for your OpenAI API key
+- save these settings for later
+
+### Step 3: Launch the app
 
 ```bash
-python3 ontoanno ui --config configs/pdac_sn.yaml --reset-session
-python3 ontoanno ui --config configs/pdac_sn.yaml --server-port 8502
+./start_ontoanno.sh
 ```
 
-The Streamlit UI is a local workbench, not a separate backend service. It uses the same router, controller, memory, and worker runtime as the CLI.
+The terminal will print a local web link, usually:
 
-Main areas:
+```text
+http://127.0.0.1:8501
+```
 
-- `Chat`
-  - normal natural-language interaction with the agent
-- `Run Status`
-  - 5 coarse phases:
-    - `Cluster`
-    - `Annotate`
-    - `Subcluster`
-    - `RAG_Check`
-    - `Report`
-  - current active worker log tail
-- `Artifacts`
-  - `Parent Annotation`
-  - `Subcluster`
-  - `RAG Review`
-  - `Report`, including a preview of the generated report and the RAG-check discussion section when review artifacts exist
-- `External Evidence`
-  - user-provided evidence
-  - literature-provided evidence placeholder
-- `Workers`
-  - low-level debugging panel for direct worker execution
+If you use VS Code with SSH, it will usually offer the forwarded link automatically.
 
-## Natural-Language Routes
+## Start a Specific Dataset
 
-The router is implemented in [src/ontoanno/agent_router.py](/proj/bzou_lab/projects/OntoAnno/src/ontoanno/agent_router.py). The canonical route registry is [resources/agent_registry.yaml](/proj/bzou_lab/projects/OntoAnno/resources/agent_registry.yaml).
-
-The router turns natural-language requests into one high-level action. The controller then translates that action into a worker chain. The UI uses this path for normal interaction.
-
-Current top-level routes are:
-
-### `run_parent_pipeline`
-
-Purpose:
-
-- run the full parent backbone from preprocessing through assigned parent labels
-
-Current worker chain:
-
-- `preprocess_parent`
-- `cluster_parent_markers`
-- `annotate_parent_raw`
-- `map_parent_ontology`
-- `select_parent_resolution`
-- `assign_parent_labels`
-
-When to use:
-
-- first full parent run
-- adding a genuinely new parent resolution
-- refreshing parent annotation artifacts from scratch
-
-### `run_subcluster_pipeline`
-
-Purpose:
-
-- run targeted subclustering for one parent cell type
-
-Current worker chain:
-
-- `subcluster_find_markers`
-- `subcluster_annotate_ontology`
-- `subcluster_annotate_inheritance`
-- `finalize_subcluster_annotations`
-
-When to use:
-
-- drill down into a specific parent population such as `macrophage` or `pericyte`
-
-### `run_RAG_check`
-
-Purpose:
-
-- run the current review/check pipeline on existing annotations
-
-Logical worker chain:
-
-- `build_review_packets`
-- `decide_rag_check`
-- `build_candidate_map`
-- `retrieve_rag_evidence`
-- `run_llm_compare`
-- `human_review`
-
-Boundary:
-
-- this route stops at review/human-review
-- export and report are intentionally separate
-
-### `change_annotation_preference`
-
-Purpose:
-
-- change either `granularity` or `resolution`
-
-Behavior:
-
-- `granularity`
-  - updates policy only
-  - suggested next step is usually `run_RAG_check`
-- `resolution`
-  - if the resolution already exists, switch to it
-  - if it is new, extend `annotation.parent_res` and rerun the parent backbone
-
-Important distinction:
-
-- `resolution`
-  - changes clustering-level state
-- `granularity`
-  - changes labeling specificity after clusters/markers are fixed
-
-### `add_external_evidence`
-
-Purpose:
-
-- store user-provided evidence such as `celltype -> markers`
-
-Behavior:
-
-- update existing celltype evidence
-- or define a new custom celltype entry
-
-Storage:
-
-- internal memory buckets still use:
-  - `custom_markers`
-  - `custom_celltypes`
-- conceptually they are both part of the external-evidence layer
-
-Typical next step:
-
-- `run_RAG_check`
-
-### `extract_external_evidence`
-
-Purpose:
-
-- future route for literature/database extraction
-
-Current state:
-
-- registered placeholder intent
-- worker chain intentionally not implemented yet
-
-### `run_report`
-
-Purpose:
-
-- generate the final report from current artifacts
-
-Current worker chain:
-
-- `generate_report`
-
-Current behavior:
-
-- if saved reviewed decisions exist and reviewed outputs have not yet been exported, report generation first attempts reviewed export automatically
-- if RAG-check outputs exist, the report includes a dedicated `RAG Check Review` section summarizing flagged clusters, LLM comparisons, accepted changes, and human-review needs
-
-## Worker Inventory
-
-The normalized worker contracts are defined in [resources/agent_registry.yaml](/proj/bzou_lab/projects/OntoAnno/resources/agent_registry.yaml) and formatted by [src/ontoanno/worker_contracts.py](/proj/bzou_lab/projects/OntoAnno/src/ontoanno/worker_contracts.py).
-
-### GPTAnno Backbone Workers
-
-- `preprocess_parent`
-  - prepare parent-level Seurat input and runtime context
-- `cluster_parent_markers`
-  - cluster parent cells at multiple resolutions and compute markers
-- `annotate_parent_raw`
-  - run raw parent annotation
-- `map_parent_ontology`
-  - map raw parent labels onto Cell Ontology
-- `select_parent_resolution`
-  - choose the active parent resolution
-- `assign_parent_labels`
-  - assign per-cluster and per-cell parent labels
-
-### Subcluster Workers
-
-- `subcluster_find_markers`
-  - subset a chosen parent celltype and compute subcluster markers
-- `subcluster_annotate_ontology`
-  - ontology-constrained subcluster annotation
-- `subcluster_annotate_inheritance`
-  - parent-marker-inheritance subtype annotation
-- `finalize_subcluster_annotations`
-  - write final subcluster outputs to `work/<project>/annotate_subclusters`
-
-### RAG Check Workers
-
-- `build_review_packets`
-  - package current parent outputs into one review unit per cluster
-- `decide_rag_check`
-  - wrapped controller decision worker
-  - decides which clusters can be finalized versus compared or reviewed
-- `build_candidate_map`
-  - wrapped ontology-relations worker
-  - builds candidate maps under ontology and granularity constraints
-- `retrieve_rag_evidence`
-  - wrapped evidence retrieval layer
-  - currently still embedded inside ontology-relations
-- `run_llm_compare`
-  - run the LLM judge over prepared candidates
-- `human_review`
-  - collect saved or direct user decisions for unresolved clusters
-
-### Output Workers
-
-- `export_reviewed_parent_annotations`
-  - write reviewed per-cell metadata, reviewed Seurat object, and cluster decisions
-- `generate_report`
-  - generate final report assets and deliverable report file
-
-## Memory and Session Files
-
-Project-local state lives under `work/<project>/`.
-
-Important files:
-
-- `work/<project>/agent_memory.json`
-  - stored external evidence, subcluster requests, resolution feedback
-- `work/<project>/agent_session.json`
-  - persistent natural-language session state
-- `work/<project>/agent_ui_history.json`
-  - Streamlit UI chat history rendering state
-
-## Artifacts and Output Layout
-
-Durable project artifacts:
-
-- `work/<project>/annotate_parent`
-- `work/<project>/annotate_subclusters`
-
-Run-local artifacts:
-
-- `runs/<run_id>/manifest.json`
-- `runs/<run_id>/review_packets`
-- `runs/<run_id>/ontology_relations`
-- `runs/<run_id>/llm_compare`
-- `runs/<run_id>/controller`
-- `runs/<run_id>/reviewed_parent`
-- `runs/<run_id>/report.html` or `report.pdf`
-- `runs/<run_id>/report_assets/figures`
-
-## Typical Workflows
-
-### Full parent run
+To open a different dataset config:
 
 ```bash
-python3 ontoanno ask --config configs/pdac_sn.yaml --message "Run the parent pipeline"
+./start_ontoanno.sh configs/chamber_demo.yaml
 ```
 
-### RAG review after annotation
+Example config files are in [`configs/`](/proj/bzou_lab/projects/OntoAnno/configs).
+
+## What You Can Do in OntoAnno
+
+Use the app to:
+
+- run parent annotation
+- inspect labels and prediction plots
+- run RAG-based review
+- change resolution or granularity
+- subcluster a cell population
+- add user-provided or literature-provided evidence
+- generate a final report
+
+## How to Use the Interface
+
+### 1. Project Summary
+
+The left sidebar shows the current project state:
+
+- project name
+- run ID
+- tested parent resolutions
+- selected resolution
+- granularity
+- ontology restriction status
+- evidence memory counts
+
+Use this panel to confirm that you are looking at the correct dataset and settings.
+
+### 2. Session Controls
+
+The sidebar buttons help manage the session:
+
+- `Reset agent session`: clear the current conversation state
+- `Refresh runtime state`: reload saved outputs and runtime status
+
+Use `Refresh runtime state` when the page looks stale. Use `Reset agent session` only when you want to start over.
+
+### 3. Agent Chat
+
+The center panel is the main workspace.
+
+Type normal instructions such as:
+
+- `Run the parent annotation`
+- `What is the current selected resolution?`
+- `Run the RAG-based check`
+- `Look deeper into macrophages`
+- `Add these markers to pericyte: RGS5, CSPG4, MCAM`
+- `Generate the final report`
+
+You do not need to remember worker names or internal commands.
+
+### 4. Status and Output
+
+The right panel helps you monitor the workflow:
+
+- `Status` shows the main pipeline stages
+- `Terminal Output` shows live output from the currently running worker
+- `Artifacts` shows plots, tables, reviewed outputs, and reports
+
+Use this panel whenever a job is running or when you need to inspect results.
+
+### 5. Evidence and Logs
+
+Additional tabs provide:
+
+- `External Evidence`: user and literature evidence
+- `Workers`: advanced manual worker execution
+- `Logs`: saved runtime logs
+
+Most users will mainly use `Status`, `Artifacts`, and `External Evidence`.
+
+## Typical Workflow
+
+For most projects, the workflow is:
+
+1. Run the parent annotation.
+2. Review labels and plots.
+3. Run the RAG check.
+4. Adjust resolution or granularity if needed.
+5. Subcluster a population if needed.
+6. Add evidence if needed.
+7. Generate the final report.
+
+## Requirements
+
+Before using OntoAnno, you need:
+
+- a working Python environment
+- a working R installation with the GPTAnno-related packages
+- an OpenAI API key
+- a YAML config file for your dataset
+
+If you use Docker instead, the Python and R environments are provided inside the container.
+
+## Troubleshooting
+
+### The app does not start
+
+Run setup again:
 
 ```bash
-python3 ontoanno ask --config configs/pdac_sn.yaml --message "Run the RAG check"
+bash setup.sh
 ```
 
-### Change specificity and review again
+### R jobs fail
 
-```bash
-python3 ontoanno ask --config configs/pdac_sn.yaml --message "The labels are too coarse. Make them more specific."
-python3 ontoanno ask --config configs/pdac_sn.yaml --message "Run the RAG check again."
-```
+The `Rscript` path is usually wrong, or required R packages are missing. Run `bash setup.sh` again and confirm the R path.
 
-### Run subclustering for a parent cell type
+### OpenAI calls fail
 
-```bash
-python3 ontoanno ask --config configs/pdac_sn.yaml --message "I want to look deeper into macrophages."
-```
+The API key is usually missing or invalid. Run `bash setup.sh` again and enter the key again.
 
-### Add explicit evidence
+### The page opens but the project does not work
 
-```bash
-python3 ontoanno ask --config configs/pdac_sn.yaml --message "Add external evidence for pericyte: RGS5, CSPG4, MCAM."
-```
+The YAML config usually points to missing files. Check the dataset paths in your config file.
 
-### Generate the final report
+## Useful Files
 
-```bash
-python3 ontoanno ask --config configs/pdac_sn.yaml --message "Generate report."
-```
+- [Dockerfile](/proj/bzou_lab/projects/OntoAnno/Dockerfile): container image definition
+- [compose.yaml](/proj/bzou_lab/projects/OntoAnno/compose.yaml): Docker Compose launcher
+- [.env.example](/proj/bzou_lab/projects/OntoAnno/.env.example): example container environment file
+- [docker_setup.sh](/proj/bzou_lab/projects/OntoAnno/docker_setup.sh): prepares the Docker workspace
+- [start_ontoanno_docker.sh](/proj/bzou_lab/projects/OntoAnno/start_ontoanno_docker.sh): starts the Docker version
+- [apptainer_setup.sh](/proj/bzou_lab/projects/OntoAnno/apptainer_setup.sh): prepares the Apptainer workspace
+- [start_ontoanno_apptainer.sh](/proj/bzou_lab/projects/OntoAnno/start_ontoanno_apptainer.sh): starts the Apptainer version
+- [setup.sh](/proj/bzou_lab/projects/OntoAnno/setup.sh): one-time installer
+- [start_ontoanno.sh](/proj/bzou_lab/projects/OntoAnno/start_ontoanno.sh): app launcher
+- [chamber_demo.yaml](/proj/bzou_lab/projects/OntoAnno/configs/chamber_demo.yaml): example dataset config
+- [`configs/`](/proj/bzou_lab/projects/OntoAnno/configs): more example configs
 
-## Developer CLI
+## In One Line
 
-The commands below are still supported, but they are primarily for development, debugging, and recovery rather than normal end-user operation.
-
-### Main Commands
-
-```bash
-python3 ontoanno validate --config configs/pdac_sn.yaml
-python3 ontoanno run --config configs/pdac_sn.yaml
-python3 ontoanno report --config configs/pdac_sn.yaml --force
-python3 ontoanno chat --config configs/pdac_sn.yaml
-python3 ontoanno ask --config configs/pdac_sn.yaml --message "Run the RAG check"
-```
-
-### Review and Analysis
-
-```bash
-python3 ontoanno review-packets --config configs/pdac_sn.yaml --force
-python3 ontoanno ontology-relations --config configs/pdac_sn.yaml --force
-python3 ontoanno llm-compare --config configs/pdac_sn.yaml --force
-python3 ontoanno controller --config configs/pdac_sn.yaml --phase post_compare --force
-python3 ontoanno agent --config configs/pdac_sn.yaml --force
-```
-
-### Decomposed Backbone Workers
-
-```bash
-python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool preprocess_parent
-python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool cluster_parent_markers
-python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool annotate_parent_raw
-python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool map_parent_ontology
-python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool select_parent_resolution
-python3 ontoanno gptanno-tool --config configs/pdac_sn.yaml --tool assign_parent_labels
-```
-
-### Worker Introspection
-
-```bash
-python3 ontoanno workers --config configs/pdac_sn.yaml
-python3 ontoanno worker-run --config configs/pdac_sn.yaml --worker build_review_packets
-python3 ontoanno worker-run --config configs/pdac_sn.yaml --worker decide_rag_check --phase initial
-```
-
-## Notes
-
-- The authoritative human-readable router/controller/worker registry is [resources/agent_registry.yaml](/proj/bzou_lab/projects/OntoAnno/resources/agent_registry.yaml).
-- LangGraph visualization helpers remain in:
-  - [src/ontoanno/agent_graph.py](/proj/bzou_lab/projects/OntoAnno/src/ontoanno/agent_graph.py)
-  - [src/ontoanno/agent_graph_visual.py](/proj/bzou_lab/projects/OntoAnno/src/ontoanno/agent_graph_visual.py)
-  - [langgraph.json](/proj/bzou_lab/projects/OntoAnno/langgraph.json)
-- `extract_external_evidence` is intentionally registered before its worker chain exists. That is by design, not drift.
+Run `bash setup.sh` once, then launch OntoAnno with `./start_ontoanno.sh`.
