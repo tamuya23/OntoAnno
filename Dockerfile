@@ -4,6 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PATH=/opt/ontoanno-venv/bin:$PATH \
     ONTOANNO_RSCRIPT=/usr/local/bin/Rscript \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     MPLCONFIGDIR=/app/.cache/matplotlib
@@ -43,9 +44,10 @@ RUN mkdir -p /app/.cache/matplotlib /app/runs /work /data
 
 RUN Rscript -e 'repos <- getOption("repos"); deps <- c("Depends", "Imports", "LinkingTo"); pkgs <- c("Seurat", "ontologyIndex", "jsonlite", "ggplot2", "dplyr", "magrittr", "tidyr", "stringr", "igraph", "httr", "patchwork", "rlang", "pkgload", "ellmer"); for (pkg in pkgs) { if (!requireNamespace(pkg, quietly = TRUE)) { message("Installing R package: ", pkg); install.packages(pkg, repos = repos, dependencies = deps) } else { message("R package already installed: ", pkg) }; if (!requireNamespace(pkg, quietly = TRUE)) stop("Failed to install R package: ", pkg) }'
 
-RUN python3 -m pip install --upgrade pip setuptools wheel && \
-    python3 -m pip install ".[ui]" && \
-    python3 -m pip install -r /app/GPTAnno/PDF2markers/requirements.txt
+RUN python3 -m venv /opt/ontoanno-venv && \
+    /opt/ontoanno-venv/bin/python -m pip install --upgrade pip setuptools wheel && \
+    /opt/ontoanno-venv/bin/python -m pip install ".[ui]" && \
+    /opt/ontoanno-venv/bin/python -m pip install -r /app/GPTAnno/PDF2markers/requirements.txt
 
 RUN chmod +x /app/ontoanno /app/docker/entrypoint.sh
 
