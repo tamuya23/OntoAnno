@@ -46,7 +46,7 @@ RUN Rscript -e 'repos <- getOption("repos"); deps <- c("Depends", "Imports", "Li
 
 RUN python3 -m venv /opt/ontoanno-venv && \
     /opt/ontoanno-venv/bin/python -m pip install --upgrade pip setuptools wheel && \
-    /opt/ontoanno-venv/bin/python -m pip install ".[ui]" && \
+    /opt/ontoanno-venv/bin/python -m pip install -e ".[ui]" && \
     /opt/ontoanno-venv/bin/python -m pip install -r /app/GPTAnno/PDF2markers/requirements.txt
 
 RUN chmod +x /app/ontoanno /app/docker/entrypoint.sh
