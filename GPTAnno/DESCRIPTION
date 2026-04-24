@@ -19,8 +19,7 @@ Imports:
     ggplot2,
     patchwork,
     rlang,
-    ellmer,
-    openai
+    ellmer
 Suggests:
     knitr,
     rmarkdown,

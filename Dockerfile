@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PATH=/opt/ontoanno-venv/bin:$PATH \
-    ONTOANNO_RSCRIPT=/usr/local/bin/Rscript \
+    ONTOANNO_RSCRIPT=/usr/bin/Rscript \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     MPLCONFIGDIR=/app/.cache/matplotlib
 
