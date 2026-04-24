@@ -23,5 +23,17 @@ if [[ ! -f "${ROOT_DIR}/${CONFIG_PATH}" && ! -f "${CONFIG_PATH}" ]]; then
   exit 1
 fi
 
+if [[ -z "${ONTOANNO_PYTHON:-}" ]]; then
+  printf 'Error: OntoAnno setup has not saved a Python interpreter yet.\n' >&2
+  printf 'Run: bash setup.sh\n' >&2
+  exit 1
+fi
+
+if [[ ! -x "${ONTOANNO_PYTHON}" ]]; then
+  printf 'Error: configured Python is not executable: %s\n' "${ONTOANNO_PYTHON}" >&2
+  printf 'Run bash setup.sh again, or set ONTOANNO_PYTHON to Python 3.11 or newer.\n' >&2
+  exit 1
+fi
+
 cd "${ROOT_DIR}"
-exec ./ontoanno ui --config "${CONFIG_PATH}" --server-port "${PORT}"
+exec "${ONTOANNO_PYTHON}" ./ontoanno ui --config "${CONFIG_PATH}" --server-port "${PORT}"

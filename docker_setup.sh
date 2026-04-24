@@ -20,7 +20,10 @@ else
 fi
 
 printf '\nNext step:\n'
-printf '1. Edit %s and set OPENAI_API_KEY and ONTOANNO_CONFIG\n' "${ENV_FILE}"
-printf '2. Put your input files under %s/data\n' "${ROOT_DIR}"
+printf '1. Edit %s\n' "${ENV_FILE}"
+printf '   - OPENAI_API_KEY: your OpenAI API key\n'
+printf '   - ONTOANNO_CONFIG: tells OntoAnno which dataset config file to open\n'
+printf '     The config file contains your data paths and workflow settings.\n'
+printf '2. Put your input data files under %s/data\n' "${ROOT_DIR}"
 printf '3. Start OntoAnno with: ./start_ontoanno_docker.sh\n'
 
