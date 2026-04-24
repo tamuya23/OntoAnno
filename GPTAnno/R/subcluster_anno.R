@@ -1058,14 +1058,19 @@ summarize_gptcelltype_sub <- function(markers,
                                       model = 'gpt-5',
                                       tissue_name = "",
                                       n_runs = 2,
-                                      restrict_to = NULL) {
+                                      restrict_to = NULL,
+                                      llm_config = NULL) {
+  if (is.null(llm_config)) {
+    llm_config <- default_llm_config(model)
+  }
   results_list <- vector("list", n_runs)
   for (i in seq_len(n_runs)) {
     res <- gptcelltype_sub(
       markers,
       model = model,
       tissue_name = tissue_name,
-      restrict_to = restrict_to
+      restrict_to = restrict_to,
+      llm_config = llm_config
     )
     results_list[[i]] <- res
   }
@@ -1146,91 +1151,19 @@ gptcelltype_sub <- function(input,
                             tissue_name = NULL,
                             model = 'gpt-5',
                             topgenenumber = 10,
-                            restrict_to = NULL) {
-  if (is.list(input) && !is.data.frame(input)) {
-    collapsed <- sapply(input, paste, collapse = ',')
-  } else {
-    # Validate input columns.
-    req_cols <- c("cluster", "gene", "avg_log2FC")
-    if (!all(req_cols %in% colnames(input))) {
-      stop(sprintf("`input` must be a data.frame with columns: %s",
-                   paste(req_cols, collapse = ", ")))
-    }
-
-    # Build per-subcluster marker strings using genes with avg_log2FC > 1.
-    df <- input[input$avg_log2FC > 1, c("cluster", "gene", "avg_log2FC"), drop = FALSE]
-    if (nrow(df) == 0) stop("No rows with avg_log2FC > 1 after filtering.")
-
-    df <- df[order(df$cluster, -df$avg_log2FC), ]
-    collapsed <- tapply(seq_len(nrow(df)), df$cluster, function(idx) {
-      genes <- df$gene[idx]
-      paste0(utils::head(genes, topgenenumber), collapse = ",")
-    })
+                            restrict_to = NULL,
+                            llm_config = NULL) {
+  if (is.null(llm_config)) {
+    llm_config <- default_llm_config(model)
   }
-
-  # Build prompt strings.
-  base_prompt <- paste0(
-    "Identify cell types of ", tissue_name, " using the following markers separately for each\n",
-    "row. Only provide the cell type name. Do not show numbers before the name.\n",
-    "Some can be a mixture of multiple cell types.\n"
+  gptcelltype(
+    input = input,
+    tissue_name = tissue_name,
+    model = model,
+    topgenenumber = topgenenumber,
+    restrict_to = restrict_to,
+    llm_config = llm_config
   )
-  if (!is.null(restrict_to)) {
-    base_prompt <- paste0(
-      base_prompt,
-      "Restrict your predictions to the following cell types:\n",
-      paste(restrict_to, collapse = ", "), "\n"
-    )
-  }
-  debug_prompt <- paste0(
-    base_prompt,
-    paste0(names(collapsed), ": ", unlist(collapsed), collapse = "\n")
-  )
-
-  # Check API key and fail fast with the prompt for debugging.
-  OPENAI_API_KEY <- Sys.getenv("OPENAI_API_KEY")
-  if (OPENAI_API_KEY == "") {
-    message("OPENAI_API_KEY missing. Prompt that would have been sent:\n", debug_prompt)
-    stop("Error: OpenAI API key not found. Please set OPENAI_API_KEY.")
-  }
-
-  # Batch into chunks of 30 lines.
-  cutnum <- ceiling(length(collapsed) / 30)
-  cid <- if (cutnum > 1) as.numeric(cut(seq_along(collapsed), cutnum)) else rep(1, length(collapsed))
-
-  allres <- sapply(seq_len(cutnum), function(i) {
-    id <- which(cid == i)
-    prompt <- paste0(base_prompt, paste(unlist(collapsed[id]), collapse = "\n"))
-
-    res <- rep("unknown", length(id))
-    attempt <- 1
-    success <- FALSE
-    while (attempt <= 3 && !success) {
-      tryCatch({
-        k <- openai::create_chat_completion(
-          model = model,
-          message = list(list("role" = "user", "content" = prompt))
-        )
-        res_tmp <- strsplit(k$choices[, "message.content"], "\n")[[1]]
-        if (length(res_tmp) == length(id)) {
-          res <- res_tmp
-          success <- TRUE
-        } else {
-          message(sprintf("Response lines (%d) != expected (%d) on attempt %d.",
-                          length(res_tmp), length(id), attempt))
-          Sys.sleep(1)
-        }
-      }, error = function(e) {
-        message(sprintf("API call failed on attempt %d: %s", attempt, e$message))
-        Sys.sleep(1)
-      })
-      attempt <- attempt + 1
-    }
-
-    names(res) <- names(collapsed)[id]
-    res
-  }, simplify = FALSE)
-
-  return(gsub(",$", "", unlist(allres)))
 }
 
 
@@ -1340,8 +1273,12 @@ anno_subcluster_inherit <- function(
     ontology = NULL,
     save_dir = NULL,
     save_plots = TRUE,
-    save_objects = FALSE
+    save_objects = FALSE,
+    llm_config = NULL
 ) {
+  if (is.null(llm_config)) {
+    llm_config <- default_llm_config(model)
+  }
   res_value <- gsub("subcluster_res\\.", "", subcluster_res)
   marker_filename <- paste0("markers_res_", res_value, ".rds")
   sub_markers_path <- file.path(marker_dir, marker_filename)
@@ -1377,7 +1314,8 @@ anno_subcluster_inherit <- function(
     markers = gpt_input,
     model = model,
     tissue_name = paste0(base_celltype, " in ", tissue_name),
-    n_runs = n_runs
+    n_runs = n_runs,
+    llm_config = llm_config
   )
   if (!is.null(ontology_graph)) {
     annotation_summary <- calculate_ontology_distance(
@@ -1448,8 +1386,12 @@ anno_subcluster <- function( base_dir = "output/subclusters", cl, mapping_dict, 
                              strategy              = c("ontology", "marker_inheritance"),
                              parent_marker_root    = NULL,
                              parent_res_val        = "0.3",
-                             parent_celltype_col   = "celltype_parent"
+                             parent_celltype_col   = "celltype_parent",
+                             llm_config            = NULL
 ) {
+  if (is.null(llm_config)) {
+    llm_config <- default_llm_config(model)
+  }
   strategy  <- match.arg(strategy)
   subtypes  <- list.dirs(base_dir, full.names = TRUE, recursive = FALSE)
   all_out   <- list()
@@ -1479,7 +1421,8 @@ anno_subcluster <- function( base_dir = "output/subclusters", cl, mapping_dict, 
         save_objects      = FALSE,
         ontology_graph    = ontology_graph,
         subcluster_prefix = subcluster_prefix,
-        children_names    = children
+        children_names    = children,
+        llm_config        = llm_config
       )
       all_out[[ct_name]] <- annot
       next
@@ -1506,7 +1449,8 @@ anno_subcluster <- function( base_dir = "output/subclusters", cl, mapping_dict, 
         save_dir             = annot_save_dir,
         save_plots           = TRUE,
         save_objects         = FALSE,
-        marker_dir           = ct_dir
+        marker_dir           = ct_dir,
+        llm_config           = llm_config
       )
       annot_list[[paste0("res_", res)]] <- annot
     }
@@ -1550,7 +1494,11 @@ gptanno_sub <- function(seurat_obj, resolutions, cl,  mapping_dict,
                         tissue_name = NULL, n_runs = 2,
                         save_dir = NULL, save_plots = TRUE,
                         save_objects = FALSE, ontology_graph = NULL,
-                        subcluster_prefix = "subcluster_res.", children_names = NULL) {
+                        subcluster_prefix = "subcluster_res.", children_names = NULL,
+                        llm_config = NULL) {
+  if (is.null(llm_config)) {
+    llm_config <- default_llm_config(model)
+  }
   results_list <- list()
   for (res in resolutions) {
     message("\nRunning annotation for resolution: ", res)
@@ -1568,7 +1516,14 @@ gptanno_sub <- function(seurat_obj, resolutions, cl,  mapping_dict,
       next
     }
     markers <- readRDS(marker_file)
-    annotation_summary <- summarize_gptcelltype_sub(markers, model = model, tissue_name = tissue_name, n_runs = n_runs, restrict_to = children_names)
+    annotation_summary <- summarize_gptcelltype_sub(
+      markers,
+      model = model,
+      tissue_name = tissue_name,
+      n_runs = n_runs,
+      restrict_to = children_names,
+      llm_config = llm_config
+    )
     if (!is.null(ontology_graph)) {
       annotation_summary <- calculate_ontology_distance(annotation_summary, ontology_graph = ontology_graph, cl_term_map)
     }

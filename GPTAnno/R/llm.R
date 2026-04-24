@@ -41,6 +41,12 @@
   paste(param_names, collapse = ", ")
 }
 
+# Internal: default public annotation calls to the ellmer-backed config path,
+# while preserving the legacy `model` argument as a convenience override.
+default_llm_config <- function(model = "gpt-5") {
+  list(provider = "openai", model = model)
+}
+
 #' Call LLM API
 #'
 #' Routes prompts to OpenAI, Anthropic, Google Gemini, or local Ollama models via ellmer package.
@@ -195,6 +201,9 @@ call_llm <- function(prompt, provider = "openai", model = NULL,
 #' @keywords internal
 #' @export
 prepare_config <- function(model = "gpt-5.2", llm_config = NULL) {
+  if (is.null(llm_config)) {
+    llm_config <- default_llm_config(model)
+  }
   config <- list(
     provider = "openai",
     model = model,

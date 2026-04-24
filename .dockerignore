@@ -1,0 +1,16 @@
+.git
+.gitignore
+.cache
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.venv
+venv
+runs
+work
+backups
+data
+.ontoanno.env
+

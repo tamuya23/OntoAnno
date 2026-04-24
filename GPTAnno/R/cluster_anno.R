@@ -160,6 +160,9 @@ gptcelltype <- function(input, tissue_name = NULL, model = 'gpt-5', topgenenumbe
                         add_cl_prompt = FALSE, restrict_to = NULL, parent_celltype = NULL,
                         llm_config = NULL) {
   # Prepare LLM configuration
+  if (is.null(llm_config)) {
+    llm_config <- default_llm_config(model)
+  }
   config <- prepare_config(model = model, llm_config = llm_config)
 
   # Normalize input to named character vector of markers per cluster

@@ -1,0 +1,64 @@
+project:
+  name: ChamberDemo
+  work_dir: /proj/bzou_lab/projects/OntoAnno/work/ChamberDemo
+
+inputs:
+  manual_labels_csv: /proj/bzou_lab/projects/GPTAnno_Experiment/Chamber/Chamber_singleR_annotation.csv
+  pdf_dir: null
+  annotation_output_dir: /proj/bzou_lab/projects/GPTAnno_Experiment/Chamber/output
+
+policy:
+  ontology: true
+  granularity: balanced
+  fallback: up
+  review_tie: true
+  review_nomatch: true
+
+llm:
+  annotation:
+    provider: openai
+    model: gpt-5
+    api_key: ${OPENAI_API_KEY}
+    api_url: null
+    system_prompt: null
+  external_evidence:
+    model: gpt-5
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+  pdfmarkers:
+    model: gpt-5-nano
+    env:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+
+annotation:
+  species: mouse
+  parent_res:
+  - 0.1
+  - 0.3
+  - 0.5
+  - 0.7
+  sub_res:
+  - 0.1
+  - 0.3
+  preprocess: false
+  min_cell_count: 3000
+  tissue_name: mouse heart chamber dataset
+  n_runs_parent: 10
+  n_runs_sub: 10
+
+alignment:
+  celltypes_to_subcluster: null
+  user_restrict_to: {}
+  combine_restrictions: true
+  manual_resolution_map: {}
+  on_missing_decision: stop
+
+evaluation:
+  enabled: true
+  manual_col: SingleR_labels
+  baselines: []
+
+report:
+  format: html
