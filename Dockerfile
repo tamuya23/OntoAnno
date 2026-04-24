@@ -13,8 +13,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
-    python3-venv \
-    python3-dev \
     poppler-utils \
     libcurl4-openssl-dev \
     libssl-dev \
@@ -26,10 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng-dev \
     libtiff5-dev \
     libjpeg-dev \
-    libgit2-dev \
-    libglpk-dev \
-    libudunits2-dev \
-    libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml /app/pyproject.toml
@@ -45,22 +39,7 @@ COPY README.md /app/README.md
 
 RUN mkdir -p /app/.cache/matplotlib /app/runs /work /data
 
-RUN install2.r --error --skipinstalled \
-    Seurat \
-    ontologyIndex \
-    jsonlite \
-    ggplot2 \
-    dplyr \
-    magrittr \
-    tidyr \
-    stringr \
-    igraph \
-    httr \
-    patchwork \
-    rlang \
-    pkgload \
-    ellmer \
-    openai
+RUN Rscript -e 'repos <- c(CRAN = "https://cloud.r-project.org"); pkgs <- c("Seurat", "ontologyIndex", "jsonlite", "ggplot2", "dplyr", "magrittr", "tidyr", "stringr", "igraph", "httr", "patchwork", "rlang", "pkgload", "ellmer"); for (pkg in pkgs) { if (!requireNamespace(pkg, quietly = TRUE)) { message("Installing R package: ", pkg); install.packages(pkg, repos = repos, dependencies = TRUE) } else { message("R package already installed: ", pkg) }; if (!requireNamespace(pkg, quietly = TRUE)) stop("Failed to install R package: ", pkg) }'
 
 RUN python3 -m pip install --upgrade pip setuptools wheel && \
     python3 -m pip install ".[ui]" && \
@@ -71,4 +50,3 @@ RUN chmod +x /app/ontoanno /app/docker/entrypoint.sh
 EXPOSE 8501
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-
