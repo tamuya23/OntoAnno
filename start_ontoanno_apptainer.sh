@@ -59,7 +59,6 @@ if [[ ! -f "${SIF_PATH}" ]]; then
   exit 1
 fi
 
-export APPTAINER_BINDPATH="${ROOT_DIR}/data:/data,${ROOT_DIR}/work:/work,${ROOT_DIR}/runs:/app/runs,${ROOT_DIR}/configs:/app/configs"
 export APPTAINERENV_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 export APPTAINERENV_OPENAI_BASE_URL="${OPENAI_BASE_URL:-}"
 export APPTAINERENV_ONTOANNO_CL_OBO="${ONTOANNO_CL_OBO:-}"
@@ -68,4 +67,9 @@ export APPTAINERENV_ONTOANNO_PORT="${ONTOANNO_PORT:-8501}"
 export APPTAINERENV_STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"
 
 cd "${ROOT_DIR}"
-exec apptainer run --cleanenv "${SIF_PATH}" "$@"
+exec apptainer run --cleanenv \
+  --bind "${ROOT_DIR}/data:/data" \
+  --bind "${ROOT_DIR}/work:/work" \
+  --bind "${ROOT_DIR}/runs:/app/runs" \
+  --bind "${ROOT_DIR}/configs:/app/configs" \
+  "${SIF_PATH}" "$@"

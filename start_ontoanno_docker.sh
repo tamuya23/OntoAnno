@@ -11,5 +11,4 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 cd "${ROOT_DIR}"
-exec docker compose up --build "$@"
-
+exec docker compose up "$@"
