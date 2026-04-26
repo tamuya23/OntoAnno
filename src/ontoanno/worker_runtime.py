@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -52,20 +53,61 @@ def has_parent_annotation_outputs(orchestrator: Any) -> bool:
     outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
     annotate_parent = outputs.get("annotate_parent", {})
     if isinstance(annotate_parent, dict) and bool(annotate_parent):
-        return True
-
-    gptanno_tools = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
-    assign_parent = gptanno_tools.get("assign_parent_labels", {})
-    if isinstance(assign_parent, dict) and bool(assign_parent):
-        return True
+        annotation_parent_rds = str(annotate_parent.get("annotation_parent_rds") or "")
+        markers_dir = str(annotate_parent.get("markers_dir") or "")
+        if (
+            annotation_parent_rds
+            and Path(annotation_parent_rds).exists()
+            and markers_dir
+            and Path(markers_dir).is_dir()
+            and annotate_parent.get("best_resolution")
+            and annotate_parent.get("cluster_col")
+        ):
+            return True
 
     parent_dir = orchestrator.work_dir / "annotate_parent"
     required_files = [
+        parent_dir / "annotation_parent.rds",
         parent_dir / "annotation_summary_scores.csv",
         parent_dir / "parent_ontology_mapping.csv",
+        parent_dir / "best_parent_resolution.json",
         parent_dir / "seurat_parent_annotated.rds",
     ]
-    return all(path.exists() for path in required_files)
+    if all(path.exists() for path in required_files) and (parent_dir / "marker_genes").is_dir():
+        return True
+
+    gptanno_tools = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
+    annotate_parent_raw = gptanno_tools.get("annotate_parent_raw", {})
+    cluster_parent = gptanno_tools.get("cluster_parent_markers", {})
+    assign_parent = gptanno_tools.get("assign_parent_labels", {})
+    annotation_parent_rds = (
+        str(annotate_parent_raw.get("annotation_parent_rds") or "")
+        if isinstance(annotate_parent_raw, dict)
+        else ""
+    )
+    markers_dir = (
+        str(cluster_parent.get("markers_dir") or "")
+        if isinstance(cluster_parent, dict)
+        else ""
+    )
+    parent_seurat_rds = (
+        str(assign_parent.get("parent_seurat_rds") or "")
+        if isinstance(assign_parent, dict)
+        else ""
+    )
+    if (
+        annotation_parent_rds
+        and Path(annotation_parent_rds).exists()
+        and markers_dir
+        and Path(markers_dir).is_dir()
+        and parent_seurat_rds
+        and Path(parent_seurat_rds).exists()
+        and assign_parent.get("best_resolution")
+        and assign_parent.get("cluster_col")
+    ):
+        return True
+
+    return False
 
 
 def _compact_outputs(payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -132,67 +174,212 @@ def _has_review_packets(orchestrator: Any) -> bool:
     return (orchestrator.run_dir / "review_packets" / "index.json").exists()
 
 
-def _has_controller_index(orchestrator: Any) -> bool:
-    return (orchestrator.run_dir / "controller" / "index.json").exists()
+def _parent_seurat_from_review_index(run_dir: Path) -> str | None:
+    index_path = run_dir / "review_packets" / "index.json"
+    if not index_path.exists():
+        return None
+    index = load_json(index_path)
+    shared = index.get("shared", {}) if isinstance(index.get("shared"), dict) else {}
+    files = shared.get("files", {}) if isinstance(shared.get("files"), dict) else {}
+    parent_seurat = str(files.get("parent_seurat_rds") or "").strip()
+    return parent_seurat or None
 
 
-def _has_ontology_relations(orchestrator: Any) -> bool:
-    outputs = orchestrator.manifest.get("outputs", {}) if isinstance(orchestrator.manifest.get("outputs"), dict) else {}
-    if isinstance(outputs.get("ontology_relations"), dict) and outputs.get("ontology_relations"):
-        return True
-    return (orchestrator.run_dir / "ontology_relations" / "ontology_relations.outputs.json").exists()
+def _has_r_bootstrap_parent(config: dict[str, Any]) -> bool:
+    inputs = config.get("inputs", {}) if isinstance(config.get("inputs"), dict) else {}
+    bootstrap = inputs.get("bootstrap_parent") if isinstance(inputs.get("bootstrap_parent"), dict) else {}
+    required = ("annotation_parent_rds", "annotation_scores_csv", "parent_seurat_rds", "markers_dir")
+    return bool(bootstrap) and all(bootstrap.get(key) and Path(str(bootstrap.get(key))).exists() for key in required)
+
+
+def _clear_downstream_rag_outputs(orchestrator: Any) -> None:
+    """Review packets define the RAG input set; downstream outputs become stale when they change."""
+    clear = getattr(orchestrator, "clear_rag_dependent_outputs", None)
+    if callable(clear):
+        clear()
+        return
+    stale_stages = ("ontology_relations", "llm_compare", "controller", "reviewed_parent")
+    for stage in stale_stages:
+        path = orchestrator.run_dir / stage
+        if path.exists():
+            shutil.rmtree(path)
+
+    outputs = orchestrator.manifest.get("outputs")
+    if isinstance(outputs, dict):
+        for stage in stale_stages:
+            outputs.pop(stage, None)
+        save_manifest = getattr(orchestrator, "_save_manifest", None)
+        if callable(save_manifest):
+            save_manifest()
+    _clear_report_outputs(orchestrator)
+
+
+def _clear_after_ontology_outputs(orchestrator: Any) -> None:
+    clear = getattr(orchestrator, "clear_after_ontology_outputs", None)
+    if callable(clear):
+        clear()
+        return
+    stale_stages = ("llm_compare", "controller", "reviewed_parent")
+    for stage in stale_stages:
+        path = orchestrator.run_dir / stage
+        if path.exists():
+            shutil.rmtree(path)
+
+    outputs = orchestrator.manifest.get("outputs")
+    if isinstance(outputs, dict):
+        for stage in stale_stages:
+            outputs.pop(stage, None)
+        save_manifest = getattr(orchestrator, "_save_manifest", None)
+        if callable(save_manifest):
+            save_manifest()
+    _clear_report_outputs(orchestrator)
+
+
+def _clear_after_llm_outputs(orchestrator: Any) -> None:
+    clear = getattr(orchestrator, "clear_after_llm_outputs", None)
+    if callable(clear):
+        clear()
+        return
+    stale_stages = ("controller", "reviewed_parent")
+    for stage in stale_stages:
+        path = orchestrator.run_dir / stage
+        if path.exists():
+            shutil.rmtree(path)
+
+    outputs = orchestrator.manifest.get("outputs")
+    if isinstance(outputs, dict):
+        for stage in stale_stages:
+            outputs.pop(stage, None)
+        save_manifest = getattr(orchestrator, "_save_manifest", None)
+        if callable(save_manifest):
+            save_manifest()
+    _clear_report_outputs(orchestrator)
+
+
+def _clear_report_outputs(orchestrator: Any) -> None:
+    clear = getattr(orchestrator, "clear_report_outputs", None)
+    if callable(clear):
+        clear()
+        return
+    for path in [
+        orchestrator.run_dir / "report_assets",
+        orchestrator.run_dir / "report.html",
+        orchestrator.run_dir / "report.pdf",
+    ]:
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+
+    outputs = orchestrator.manifest.get("outputs")
+    if isinstance(outputs, dict):
+        outputs.pop("report", None)
+        save_manifest = getattr(orchestrator, "_save_manifest", None)
+        if callable(save_manifest):
+            save_manifest()
+
+
+def _clear_subcluster_outputs(orchestrator: Any) -> None:
+    clear = getattr(orchestrator, "clear_subcluster_outputs", None)
+    if callable(clear):
+        clear()
+        return
+    subcluster_dir = orchestrator.work_dir / "annotate_subclusters"
+    if subcluster_dir.exists():
+        shutil.rmtree(subcluster_dir)
+
+    outputs = orchestrator.manifest.get("outputs")
+    if isinstance(outputs, dict):
+        outputs.pop("annotate_subclusters", None)
+        gptanno_tools = outputs.get("gptanno_tools")
+        if isinstance(gptanno_tools, dict):
+            for worker in SUBCLUSTER_WORKERS:
+                gptanno_tools.pop(worker, None)
+        save_manifest = getattr(orchestrator, "_save_manifest", None)
+        if callable(save_manifest):
+            save_manifest()
+
+
+def _clear_parent_dependent_outputs(orchestrator: Any) -> None:
+    clear = getattr(orchestrator, "clear_parent_dependent_outputs", None)
+    if callable(clear):
+        clear()
+        return
+    _clear_subcluster_outputs(orchestrator)
+    _clear_downstream_rag_outputs(orchestrator)
+    _clear_report_outputs(orchestrator)
+
+
+def clear_rag_dependent_outputs(orchestrator: Any) -> None:
+    _clear_downstream_rag_outputs(orchestrator)
+
+
+def clear_parent_dependent_outputs(orchestrator: Any) -> None:
+    _clear_parent_dependent_outputs(orchestrator)
 
 
 def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]:
     parent_dir = orchestrator.work_dir / "annotate_parent"
     subcluster_dir = orchestrator.work_dir / "annotate_subclusters"
-    input_rds = Path(str(orchestrator.config.get("inputs", {}).get("seurat_rds") or ""))
-    preprocessed_rds = parent_dir / "seurat_preprocessed.rds"
-    clustered_rds = parent_dir / "seurat_clustered.rds"
-    annotation_parent_rds = parent_dir / "annotation_parent.rds"
-    best_parent_resolution_json = parent_dir / "best_parent_resolution.json"
+    input_rds_raw = str(orchestrator.config.get("inputs", {}).get("seurat_rds") or "").strip()
+    input_rds = Path(input_rds_raw) if input_rds_raw else None
+    has_raw_input = bool(input_rds_raw and input_rds is not None and input_rds.exists())
+    has_r_bootstrap_parent = _has_r_bootstrap_parent(orchestrator.config)
+    can_run_parent_backbone = has_raw_input or has_r_bootstrap_parent
+    parent_backbone_missing = input_rds_raw or "inputs.seurat_rds or inputs.bootstrap_parent"
+    has_parent_outputs = has_parent_annotation_outputs(orchestrator)
     parent_seurat_rds = parent_dir / "seurat_parent_annotated.rds"
-    subcluster_result_rds = subcluster_dir / "subcluster_find_markers.rds"
-    ontology_workflow_rds = subcluster_dir / "ontology_workflow.rds"
-    inheritance_workflow_rds = subcluster_dir / "marker_inheritance_workflow.rds"
     decisions_json, _ = _interactive_decisions_paths(orchestrator.run_dir)
 
     missing: list[str] = []
     notes: list[str] = []
 
     if worker == "preprocess_parent":
-        missing = _missing_paths(input_rds)
+        if not can_run_parent_backbone:
+            missing = [parent_backbone_missing]
     elif worker == "cluster_parent_markers":
-        missing = _missing_paths(preprocessed_rds)
-        notes.append("Run preprocess_parent first.")
+        if not can_run_parent_backbone:
+            missing = [parent_backbone_missing]
+        notes.append("This worker auto-runs preprocess_parent if needed.")
     elif worker == "annotate_parent_raw":
-        missing = _missing_paths(clustered_rds)
-        if not (parent_dir / "marker_genes").exists():
-            missing.append(str(parent_dir / "marker_genes"))
-        notes.append("Run cluster_parent_markers first.")
+        if not can_run_parent_backbone:
+            missing = [parent_backbone_missing]
+        notes.append("This worker auto-runs preprocess_parent and cluster_parent_markers if needed.")
     elif worker == "map_parent_ontology":
-        missing = _missing_paths(annotation_parent_rds)
-        notes.append("Run annotate_parent_raw first.")
+        if not can_run_parent_backbone:
+            missing = [parent_backbone_missing]
+        notes.append("This worker auto-runs parent annotation prerequisites if needed.")
     elif worker == "select_parent_resolution":
-        missing = _missing_paths(annotation_parent_rds)
-        notes.append("Run annotate_parent_raw first.")
+        if not can_run_parent_backbone:
+            missing = [parent_backbone_missing]
+        notes.append("This worker auto-runs parent annotation prerequisites if needed.")
     elif worker == "assign_parent_labels":
-        missing = _missing_paths(clustered_rds, annotation_parent_rds, best_parent_resolution_json)
-        notes.append("Run select_parent_resolution first if best_parent_resolution.json is missing.")
+        if not can_run_parent_backbone:
+            missing = [parent_backbone_missing]
+        notes.append("This worker auto-runs parent annotation and resolution-selection prerequisites if needed.")
     elif worker == "subcluster_find_markers":
-        missing = _missing_paths(parent_seurat_rds)
+        if not can_run_parent_backbone:
+            missing = [parent_backbone_missing]
         targets = orchestrator.config.get("alignment", {}).get("celltypes_to_subcluster")
         if not isinstance(targets, list) or not [item for item in targets if str(item).strip()]:
             missing.append("alignment.celltypes_to_subcluster")
-        notes.append("Run assign_parent_labels and configure target cell type(s) first.")
+        notes.append("This worker auto-runs assign_parent_labels if parent labels are missing.")
     elif worker in {"subcluster_annotate_ontology", "subcluster_annotate_inheritance"}:
-        missing = _missing_paths(subcluster_result_rds)
-        notes.append("Run subcluster_find_markers first.")
+        targets = orchestrator.config.get("alignment", {}).get("celltypes_to_subcluster")
+        if not isinstance(targets, list) or not [item for item in targets if str(item).strip()]:
+            missing.append("alignment.celltypes_to_subcluster")
+        if not can_run_parent_backbone:
+            missing.append(parent_backbone_missing)
+        notes.append("This worker auto-runs subcluster_find_markers if needed.")
     elif worker == "finalize_subcluster_annotations":
-        missing = _missing_paths(ontology_workflow_rds, inheritance_workflow_rds)
-        notes.append("Run both subcluster annotation workers first.")
+        targets = orchestrator.config.get("alignment", {}).get("celltypes_to_subcluster")
+        if not isinstance(targets, list) or not [item for item in targets if str(item).strip()]:
+            missing.append("alignment.celltypes_to_subcluster")
+        if not can_run_parent_backbone:
+            missing.append(parent_backbone_missing)
+        notes.append("This worker auto-runs both subcluster annotation branches if needed.")
     elif worker == "build_review_packets":
-        if not has_parent_annotation_outputs(orchestrator):
+        if not has_parent_outputs:
             missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
             notes.append(
                 "Run parent annotation through assign_parent_labels first, or configure inputs.annotation_parent_rds with existing GPTAnno annotation artifacts."
@@ -202,24 +389,37 @@ def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]
             missing = [str(orchestrator.run_dir / "review_packets" / "index.json")]
             notes.append("Run build_review_packets first.")
     elif worker == "build_candidate_map":
-        if not _has_controller_index(orchestrator):
-            missing = [str(orchestrator.run_dir / "controller" / "index.json")]
-            notes.append("Run decide_rag_check first.")
+        if not has_parent_outputs:
+            missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
+        notes.append("This worker auto-runs build_review_packets and decide_rag_check(initial) if needed.")
     elif worker == "retrieve_rag_evidence":
-        if not _has_ontology_relations(orchestrator):
-            missing = [str(orchestrator.run_dir / "ontology_relations" / "ontology_relations.outputs.json")]
-            notes.append("Run build_candidate_map first.")
+        if not has_parent_outputs:
+            missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
+        notes.append("This proxy worker auto-runs candidate-map prerequisites if needed.")
     elif worker == "run_llm_compare":
-        if not _has_ontology_relations(orchestrator):
-            missing = [str(orchestrator.run_dir / "ontology_relations" / "ontology_relations.outputs.json")]
-            notes.append("Run build_candidate_map first.")
+        if not has_parent_outputs:
+            missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
+        notes.append("This worker auto-runs review packets, controller, candidate map, and post-ontology planning if needed.")
     elif worker == "human_review":
-        if not _has_controller_index(orchestrator):
-            missing = [str(orchestrator.run_dir / "controller" / "index.json")]
-            notes.append("Run decide_rag_check post_compare first.")
+        if not _has_review_packets(orchestrator):
+            missing = [str(orchestrator.run_dir / "review_packets" / "index.json")]
+            notes.append("Run run_RAG_check or build_review_packets first; human review does not create review packets by itself.")
+        else:
+            notes.append("This worker auto-runs decide_rag_check(post_compare) to load the current unresolved clusters.")
     elif worker == "export_reviewed_parent_annotations":
-        missing = _missing_paths(decisions_json)
-        notes.append("Run or save human-review decisions first.")
+        parent_seurat = _parent_seurat_from_review_index(orchestrator.run_dir)
+        if not parent_seurat or not Path(parent_seurat).exists():
+            missing = [parent_seurat or "review_packets/index.json:shared.files.parent_seurat_rds"]
+            notes.append("Reviewed parent export requires a parent Seurat RDS to write per-cell reviewed labels.")
+        elif not decisions_json.exists():
+            auto_decisions, blocked_clusters = _automatic_review_decisions(orchestrator.run_dir)
+            if blocked_clusters or not auto_decisions:
+                missing = _missing_paths(orchestrator.run_dir / "controller" / "index.json") or [str(decisions_json)]
+                notes.append(
+                    "Run RAG check first and save human-review decisions for unresolved clusters before exporting reviewed annotations."
+                )
+            else:
+                notes.append("No human-review decision file exists, but terminal controller states can be exported automatically.")
     elif worker == "generate_report":
         if not has_parent_annotation_outputs(orchestrator):
             missing = [str(parent_seurat_rds)]
@@ -231,7 +431,7 @@ def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]
         "ok": ok,
         "status": "ready" if ok else "blocked",
         "missing": missing,
-        "notes": [] if ok else notes,
+        "notes": notes,
     }
 
 
@@ -254,6 +454,61 @@ def _controller_cluster_ids(run_dir: Path, action: str) -> list[str]:
     return cluster_ids
 
 
+def _controller_states(run_dir: Path) -> list[dict[str, Any]]:
+    index_path = run_dir / "controller" / "index.json"
+    if not index_path.exists():
+        return []
+    payload = load_json(index_path)
+    states: list[dict[str, Any]] = []
+    for item in payload.get("states", []):
+        state_path = Path(str(item.get("state_json") or ""))
+        state = load_json(state_path) if state_path.exists() else {}
+        if not isinstance(state, dict):
+            state = {}
+        if item.get("cluster_id") and not state.get("cluster_id"):
+            state["cluster_id"] = item.get("cluster_id")
+        states.append(state)
+    return states
+
+
+def _automatic_review_decisions(run_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build export decisions only when controller states are already terminal."""
+    decisions: list[dict[str, Any]] = []
+    blocked_clusters: list[str] = []
+    for state in _controller_states(run_dir):
+        cluster_id = str(state.get("cluster_id") or "").strip()
+        current_label = str(state.get("current_label") or "")
+        focus_candidates = [str(value) for value in state.get("focus_candidates", []) if str(value).strip()]
+        if current_label and current_label not in focus_candidates:
+            focus_candidates = [current_label, *focus_candidates]
+
+        next_action = str(state.get("next_action") or "")
+        recommended_label = str(state.get("recommended_label") or "")
+        if next_action == "finalize_keep_current":
+            final_label = current_label
+            selection_source = "controller_keep_current"
+        elif next_action == "finalize_llm_choice" and recommended_label:
+            final_label = recommended_label
+            selection_source = "controller_llm_choose"
+        else:
+            blocked_clusters.append(cluster_id or "<unknown>")
+            continue
+
+        decisions.append(
+            {
+                "cluster_id": cluster_id,
+                "current_label": current_label,
+                "final_label": final_label,
+                "focus_candidates": focus_candidates,
+                "result_json": str(state.get("result_json") or ""),
+                "selection_source": selection_source,
+                "status": str(state.get("llm_status") or ""),
+                "user_note": "",
+            }
+        )
+    return decisions, blocked_clusters
+
+
 def run_gptanno_worker_chain(
     orchestrator: Any,
     workers: list[str],
@@ -270,6 +525,10 @@ def run_gptanno_worker_chain(
                 outputs=outputs,
             )
         )
+    if force and any(worker in PARENT_BACKBONE_WORKERS for worker in workers):
+        _clear_parent_dependent_outputs(orchestrator)
+    elif force and any(worker in SUBCLUSTER_WORKERS for worker in workers):
+        _clear_report_outputs(orchestrator)
     return executed
 
 
@@ -284,6 +543,8 @@ def run_review_packets_worker(orchestrator: Any, *, force: bool = True) -> tuple
             notes=["RAG check requires existing parent annotation outputs. Run the parent pipeline first."],
         )
     outputs = orchestrator.generate_review_packets(force=force)
+    if force:
+        _clear_downstream_rag_outputs(orchestrator)
     return outputs, _worker_result(
         worker="build_review_packets",
         implementation="build_review_packets",
@@ -322,6 +583,8 @@ def run_candidate_map_worker(
             notes=["No clusters require candidate-map construction in the current controller state."],
         )
     outputs = orchestrator.generate_ontology_relations(cluster_ids=cluster_ids, force=force)
+    if force:
+        _clear_after_ontology_outputs(orchestrator)
     return outputs, _worker_result(
         worker="build_candidate_map",
         implementation="build_ontology_relations",
@@ -364,6 +627,8 @@ def run_llm_compare_worker(
             notes=["No clusters require LLM compare in the current controller state."],
         )
     outputs = orchestrator.generate_llm_compare(cluster_ids=cluster_ids, force=force)
+    if force:
+        _clear_after_llm_outputs(orchestrator)
     summary = outputs.get("summary", {}) if isinstance(outputs, dict) else {}
     completed_count = int(
         (summary.get("completed_count", 0) if isinstance(summary, dict) else 0)
@@ -545,11 +810,43 @@ def run_export_reviewed_parent_worker(orchestrator: Any) -> tuple[dict[str, Any]
     from .interactive_cli import export_reviewed_parent_annotations
 
     decisions_path, decisions_csv = _interactive_decisions_paths(orchestrator.run_dir)
+    parent_seurat = _parent_seurat_from_review_index(orchestrator.run_dir)
+    if not parent_seurat or not Path(parent_seurat).exists():
+        outputs = {
+            "parent_seurat_rds": parent_seurat,
+            "missing_prerequisite": "parent_seurat_rds",
+        }
+        return outputs, _worker_result(
+            worker="export_reviewed_parent_annotations",
+            implementation="interactive_cli.export_reviewed_parent_annotations",
+            outputs=outputs,
+            status="blocked",
+            notes=["Reviewed parent export requires review_packets/index.json to reference an existing parent Seurat RDS."],
+        )
     if not decisions_path.exists():
+        decisions, blocked_clusters = _automatic_review_decisions(orchestrator.run_dir)
+        if decisions and not blocked_clusters:
+            outputs = export_reviewed_parent_annotations(
+                config=orchestrator.config,
+                run_dir=orchestrator.run_dir,
+                decisions=decisions,
+            )
+            orchestrator.manifest.setdefault("outputs", {})["reviewed_parent"] = outputs
+            save_manifest = getattr(orchestrator, "_save_manifest", None)
+            if callable(save_manifest):
+                save_manifest()
+            _clear_report_outputs(orchestrator)
+            return outputs, _worker_result(
+                worker="export_reviewed_parent_annotations",
+                implementation="interactive_cli.export_reviewed_parent_annotations",
+                outputs=outputs,
+                notes=["No manual decisions were needed; exported terminal controller decisions automatically."],
+            )
         outputs = {
             "decisions_json": str(decisions_path),
             "decisions_csv": str(decisions_csv),
             "missing_prerequisite": "interactive_decisions.json",
+            "blocked_clusters": blocked_clusters,
         }
         return outputs, _worker_result(
             worker="export_reviewed_parent_annotations",
@@ -557,8 +854,8 @@ def run_export_reviewed_parent_worker(orchestrator: Any) -> tuple[dict[str, Any]
             outputs=outputs,
             status="blocked",
             notes=[
-                "Reviewed parent export requires saved human-review decisions.",
-                "Collect decisions first through `ontoanno agent` or an interactive human-review flow.",
+                "Reviewed parent export requires either terminal controller decisions or saved human-review decisions.",
+                "Collect decisions first through the RAG Review UI or an interactive human-review flow.",
             ],
         )
     decisions = load_json(decisions_path)
@@ -567,6 +864,11 @@ def run_export_reviewed_parent_worker(orchestrator: Any) -> tuple[dict[str, Any]
         run_dir=orchestrator.run_dir,
         decisions=decisions,
     )
+    orchestrator.manifest.setdefault("outputs", {})["reviewed_parent"] = outputs
+    save_manifest = getattr(orchestrator, "_save_manifest", None)
+    if callable(save_manifest):
+        save_manifest()
+    _clear_report_outputs(orchestrator)
     return outputs, _worker_result(
         worker="export_reviewed_parent_annotations",
         implementation="interactive_cli.export_reviewed_parent_annotations",
@@ -582,9 +884,9 @@ def run_generate_report_worker(orchestrator: Any, *, force: bool = True) -> tupl
         else {}
     )
     if not reviewed_outputs.get("seurat_rds"):
-        decisions_path, _ = _interactive_decisions_paths(orchestrator.run_dir)
         review_packets_index = orchestrator.run_dir / "review_packets" / "index.json"
-        if decisions_path.exists() and review_packets_index.exists():
+        controller_index = orchestrator.run_dir / "controller" / "index.json"
+        if review_packets_index.exists() and controller_index.exists():
             run_export_reviewed_parent_worker(orchestrator)
 
     run_dir = orchestrator.run(from_stage="report", to_stage="report", force=force)
@@ -638,7 +940,6 @@ def run_named_worker(
         return result
 
     if worker == "human_review":
-        run_decide_rag_check_worker(orchestrator, phase="post_compare", force=False)
         controller_outputs, _ = run_decide_rag_check_worker(orchestrator, phase="post_compare", force=False)
         _, result = run_human_review_worker(controller_outputs, run_dir=orchestrator.run_dir)
         return result

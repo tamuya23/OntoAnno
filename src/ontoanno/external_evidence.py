@@ -7,16 +7,12 @@ import os
 import re
 import shutil
 import subprocess
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .agent_memory import append_memory_entry, compact_custom_marker_memory, load_agent_memory, save_agent_memory
+from .openai_client import OpenAIRequestError, chat_completions_url, post_openai_json
 from .utils import dump_json, ensure_dir, utc_now
-
-
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
 class ExternalEvidenceError(RuntimeError):
@@ -25,15 +21,7 @@ class ExternalEvidenceError(RuntimeError):
 
 def _chat_completions_url(config: dict[str, Any]) -> str:
     annotation_config = config["llm"]["annotation"]
-    base = (
-        annotation_config.get("api_url")
-        or os.getenv("OPENAI_BASE_URL")
-        or DEFAULT_OPENAI_BASE_URL
-    )
-    base = str(base).rstrip("/")
-    if base.endswith("/chat/completions"):
-        return base
-    return f"{base}/chat/completions"
+    return chat_completions_url(annotation_config.get("api_url"))
 
 
 def _pdf_llm_config(config: dict[str, Any]) -> tuple[str, str]:
@@ -66,6 +54,8 @@ def _pdfmarkers_llm_config(config: dict[str, Any]) -> tuple[str, dict[str, str]]
     }
     if not env.get("OPENAI_API_KEY") and annotation_config.get("api_key"):
         env["OPENAI_API_KEY"] = str(annotation_config["api_key"])
+    if not env.get("OPENAI_API_KEY") and os.getenv("OPENAI_API_KEY"):
+        env["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
     if not env.get("OPENAI_BASE_URL") and os.getenv("OPENAI_BASE_URL"):
         env["OPENAI_BASE_URL"] = os.getenv("OPENAI_BASE_URL", "")
     if not env.get("OPENAI_API_KEY"):
@@ -165,6 +155,7 @@ def render_pdf_pages(
     if not pdftoppm:
         raise ExternalEvidenceError("`pdftoppm` is required to render PDF pages, but it was not found on PATH.")
     rendered: list[Path] = []
+    failures: list[str] = []
     ensure_dir(output_dir)
     for page in pages:
         prefix = output_dir / f"page_{page}"
@@ -188,11 +179,14 @@ def render_pdf_pages(
             check=False,
         )
         if process.returncode != 0:
+            failures.append(f"page {page}: {process.stdout.strip()[:500]}")
             continue
         page_outputs = sorted(output_dir.glob(f"page_{page}-*.png"))
         rendered.extend(page_outputs)
     if not rendered:
-        raise ExternalEvidenceError("No PDF pages were rendered. Check the PDF file and selected page range.")
+        detail = "; ".join(failures[:3])
+        suffix = f" Renderer output: {detail}" if detail else ""
+        raise ExternalEvidenceError(f"No PDF pages were rendered. Check the PDF file and selected page range.{suffix}")
     return rendered
 
 
@@ -321,23 +315,15 @@ def _call_vision_llm(
             },
         ],
     }
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=240) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise ExternalEvidenceError(f"LLM API HTTP {exc.code}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise ExternalEvidenceError(f"LLM API request failed: {exc.reason}") from exc
+        response_payload = post_openai_json(
+            url=url,
+            payload=payload,
+            api_key=str(api_key),
+            timeout=240,
+        )
+    except OpenAIRequestError as exc:
+        raise ExternalEvidenceError(str(exc)) from exc
     content = _extract_message_content(response_payload)
     parsed = _extract_json_payload(content)
     return content, parsed, response_payload

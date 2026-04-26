@@ -7,7 +7,7 @@ name = "ontoanno"
 version = "0.1.0"
 description = "CLI orchestration layer for GPTAnno and PDF2markers"
 requires-python = ">=3.11"
-dependencies = ["PyYAML", "Jinja2", "Pillow"]
+dependencies = ["PyYAML", "Jinja2", "Pillow", "pandas"]
 
 [project.optional-dependencies]
 ui = ["streamlit>=1.40"]

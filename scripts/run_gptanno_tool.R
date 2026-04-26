@@ -46,8 +46,8 @@ build_llm_config <- function(llm_spec) {
     provider = llm_spec$provider %||% "openai",
     model = llm_spec$model %||% "gpt-5",
     params = params_obj,
-    api_key = llm_spec$api_key %||% NULL,
-    api_url = llm_spec$api_url %||% NULL,
+    api_key = llm_spec$api_key %||% Sys.getenv("OPENAI_API_KEY", unset = NULL),
+    api_url = llm_spec$api_url %||% Sys.getenv("OPENAI_BASE_URL", unset = NULL),
     system_prompt = llm_spec$system_prompt %||% NULL
   )
 }
@@ -92,6 +92,14 @@ derive_best_resolution <- function(scores_csv) {
   )
 }
 
+score_resolution_names <- function(scores_csv) {
+  table <- utils::read.csv(scores_csv, stringsAsFactors = FALSE, check.names = FALSE)
+  if (!"resolution" %in% colnames(table) || nrow(table) == 0) {
+    return(character(0))
+  }
+  vapply(table$resolution, normalize_resolution_name, character(1))
+}
+
 normalize_resolution_name <- function(value) {
   if (is.null(value) || is.na(value)) {
     return(NULL)
@@ -125,7 +133,20 @@ bootstrap_parent_outputs <- function(inputs) {
   }
 
   derived <- derive_best_resolution(bootstrap$annotation_scores_csv)
-  best_resolution <- bootstrap$best_resolution %||% derived$best_resolution
+  best_resolution <- normalize_resolution_name(bootstrap$best_resolution %||% derived$best_resolution)
+  forced_resolution <- normalize_resolution_name(annotation_cfg$forced_parent_resolution %||% NULL)
+  if (!is.null(forced_resolution)) {
+    available_resolutions <- score_resolution_names(bootstrap$annotation_scores_csv)
+    if (!forced_resolution %in% available_resolutions) {
+      stop(
+        "Forced parent resolution is not available in bootstrap annotation scores: ",
+        forced_resolution,
+        ". Available: ",
+        paste(available_resolutions, collapse = ", ")
+      )
+    }
+    best_resolution <- forced_resolution
+  }
   best_resolution_value <- sub("^res_", "", best_resolution)
   cluster_col <- bootstrap$cluster_col %||% paste0("cluster_res.", best_resolution_value)
 
@@ -177,6 +198,29 @@ has_pca_reduction <- function(seurat_obj) {
   "pca" %in% names(seurat_obj@reductions)
 }
 
+choose_dimplot_reduction <- function(seurat_obj) {
+  reductions <- names(seurat_obj@reductions)
+  preferred <- c("umap", "tsne", "pca")
+  hit <- preferred[preferred %in% reductions]
+  if (length(hit) > 0) {
+    return(hit[[1]])
+  }
+  fuzzy <- reductions[grepl("umap|tsne|pca", reductions, ignore.case = TRUE)]
+  if (length(fuzzy) > 0) {
+    return(fuzzy[[1]])
+  }
+  NULL
+}
+
+load_cell_ontology <- function() {
+  ontology_obo <- spec$runtime$ontology_obo %||% Sys.getenv("ONTOANNO_CL_OBO", unset = "")
+  if (!is.null(ontology_obo) && nzchar(ontology_obo) && file.exists(ontology_obo)) {
+    return(ontologyIndex::get_ontology(ontology_obo, extract_tags = "everything"))
+  }
+  ontology_url <- "http://purl.obolibrary.org/obo/cl.obo"
+  ontologyIndex::get_ontology(ontology_url, extract_tags = "everything")
+}
+
 build_annotation_context <- local({
   cache <- NULL
 
@@ -185,8 +229,7 @@ build_annotation_context <- local({
       return(cache)
     }
 
-    ontology_url <- "http://purl.obolibrary.org/obo/cl.obo"
-    cl <- ontologyIndex::get_ontology(ontology_url, extract_tags = "everything")
+    cl <- load_cell_ontology()
     cache <<- list(
       cl = cl,
       graph = build_ontology_graph(cl),
@@ -219,6 +262,7 @@ parent_ontology_map_csv <- file.path(annotation_dir, "parent_ontology_mapping.cs
 best_parent_resolution_json <- file.path(annotation_dir, "best_parent_resolution.json")
 
 subcluster_result_rds <- file.path(subcluster_dir, "subcluster_find_markers.rds")
+subcluster_cache_json <- file.path(subcluster_dir, "subcluster_find_markers.cache.json")
 final_ontology_rds <- file.path(subcluster_dir, "seurat_ontology_annotated.rds")
 final_inherited_rds <- file.path(subcluster_dir, "seurat_final_annotated.rds")
 final_metadata_csv <- file.path(subcluster_dir, "metadata_final.csv")
@@ -236,6 +280,25 @@ has_external_marker_genes <- function() {
 
 marker_file_for_resolution <- function(marker_dir, resolution) {
   file.path(marker_dir, paste0("markers_res_", as.character(resolution), ".rds"))
+}
+
+required_parent_resolution_names <- function() {
+  paste0("res_", as.character(unlist(annotation_cfg$parent_res)))
+}
+
+parent_cluster_cache_complete <- function(seurat_obj, marker_dir) {
+  required_cluster_cols <- paste0("cluster_res.", unlist(annotation_cfg$parent_res))
+  required_marker_files <- vapply(
+    unlist(annotation_cfg$parent_res),
+    function(resolution) marker_file_for_resolution(marker_dir, resolution),
+    character(1)
+  )
+  all(required_cluster_cols %in% colnames(seurat_obj@meta.data)) && all(file.exists(required_marker_files))
+}
+
+parent_annotation_cache_complete <- function(annotation_parent) {
+  required <- required_parent_resolution_names()
+  all(required %in% names(annotation_parent))
 }
 
 validate_marker_gene_inputs <- function(seurat_obj, marker_dir) {
@@ -437,13 +500,14 @@ run_preprocess_parent <- function() {
     ))
   }
 
-  seurat_obj <- recreate_seurat_if_needed(readRDS(inputs$seurat_rds))
+  input_seurat_obj <- readRDS(inputs$seurat_rds)
   if (isTRUE(annotation_cfg$preprocess)) {
+    seurat_obj <- recreate_seurat_if_needed(input_seurat_obj)
     if (file.exists(preprocessed_rds)) {
       seurat_obj <- readRDS(preprocessed_rds)
       if (!has_pca_reduction(seurat_obj)) {
         seurat_obj <- preprocess_seurat_object(
-          recreate_seurat_if_needed(readRDS(inputs$seurat_rds)),
+          recreate_seurat_if_needed(input_seurat_obj),
           save_path = preprocessed_rds
         )
       }
@@ -453,7 +517,8 @@ run_preprocess_parent <- function() {
         save_path = preprocessed_rds
       )
     }
-  } else if (!file.exists(preprocessed_rds)) {
+  } else {
+    seurat_obj <- input_seurat_obj
     saveRDS(seurat_obj, preprocessed_rds)
   }
 
@@ -493,12 +558,15 @@ run_cluster_parent_markers <- function() {
   run_preprocess_parent()
   seurat_obj <- readRDS(preprocessed_rds)
   if (file.exists(clustered_rds) && dir.exists(markers_dir)) {
-    return(list(
-      preprocessed_rds = preprocessed_rds,
-      clustered_rds = clustered_rds,
-      markers_dir = markers_dir,
-      bootstrapped = FALSE
-    ))
+    cached_seurat <- readRDS(clustered_rds)
+    if (parent_cluster_cache_complete(cached_seurat, markers_dir)) {
+      return(list(
+        preprocessed_rds = preprocessed_rds,
+        clustered_rds = clustered_rds,
+        markers_dir = markers_dir,
+        bootstrapped = FALSE
+      ))
+    }
   }
 
   dir.create(markers_dir, recursive = TRUE, showWarnings = FALSE)
@@ -531,7 +599,16 @@ run_parent_annotation_raw <- function() {
   }
 
   run_cluster_parent_markers()
-  if (!file.exists(annotation_parent_rds)) {
+  annotation_parent <- NULL
+  if (has_external_marker_genes()) {
+    message("inputs.marker_genes_dir is configured; refreshing parent annotation from supplied marker genes.")
+  } else if (file.exists(annotation_parent_rds)) {
+    annotation_parent <- readRDS(annotation_parent_rds)
+    if (!parent_annotation_cache_complete(annotation_parent)) {
+      annotation_parent <- NULL
+    }
+  }
+  if (is.null(annotation_parent)) {
     context <- build_annotation_context()
     seurat_obj <- readRDS(clustered_rds)
     dir.create(prediction_dir, recursive = TRUE, showWarnings = FALSE)
@@ -662,15 +739,39 @@ run_assign_parent_labels <- function() {
 }
 
 run_subcluster_find_markers <- function() {
-  if (file.exists(subcluster_result_rds)) {
-    cached <- readRDS(subcluster_result_rds)
-    cached_parent <- load_parent_resolution_info()
-    return(list(
-      subcluster_result_rds = subcluster_result_rds,
-      subcluster_folder = file.path(subcluster_dir, paste0("subclusters_res", cached_parent$best_resolution_value)),
-      subclustering_performed = !is.null(cached)
-    ))
+  parent_info_for_cache <- load_parent_resolution_info()
+  current_cache <- list(
+    best_resolution_value = parent_info_for_cache$best_resolution_value,
+    celltypes_to_subcluster = alignment_cfg$celltypes_to_subcluster,
+    sub_res = unlist(annotation_cfg$sub_res)
+  )
+  if (file.exists(subcluster_result_rds) && file.exists(subcluster_cache_json)) {
+    cached_key <- tryCatch(jsonlite::fromJSON(subcluster_cache_json, simplifyVector = FALSE), error = function(e) NULL)
+    cache_matches <- isTRUE(identical(cached_key$best_resolution_value, current_cache$best_resolution_value)) &&
+      isTRUE(identical(unlist(cached_key$celltypes_to_subcluster), unlist(current_cache$celltypes_to_subcluster))) &&
+      isTRUE(identical(as.character(unlist(cached_key$sub_res)), as.character(unlist(current_cache$sub_res))))
+    if (cache_matches) {
+      cached <- readRDS(subcluster_result_rds)
+      return(list(
+        subcluster_result_rds = subcluster_result_rds,
+        subcluster_folder = file.path(subcluster_dir, paste0("subclusters_res", current_cache$best_resolution_value)),
+        subclustering_performed = !is.null(cached)
+      ))
+    }
   }
+  unlink(
+    c(
+      subcluster_result_rds,
+      ontology_workflow_rds,
+      inheritance_workflow_rds,
+      final_ontology_rds,
+      final_inherited_rds,
+      final_metadata_csv,
+      final_dimplot_pdf
+    ),
+    recursive = TRUE,
+    force = TRUE
+  )
 
   context <- build_annotation_context()
   parent_info <- run_assign_parent_labels()
@@ -690,6 +791,7 @@ run_subcluster_find_markers <- function() {
   )
 
   saveRDS(subcluster_result, subcluster_result_rds)
+  jsonlite::write_json(current_cache, subcluster_cache_json, auto_unbox = TRUE, pretty = TRUE)
   list(
     subcluster_result_rds = subcluster_result_rds,
     subcluster_folder = subcluster_folder,
@@ -700,11 +802,13 @@ run_subcluster_find_markers <- function() {
 run_subcluster_annotate_ontology <- function() {
   if (file.exists(final_ontology_rds) && file.exists(ontology_workflow_rds)) {
     cached_subcluster <- run_subcluster_find_markers()
-    return(list(
-      ontology_workflow_rds = ontology_workflow_rds,
-      ontology_seurat_rds = final_ontology_rds,
-      subclustering_performed = isTRUE(cached_subcluster$subclustering_performed)
-    ))
+    if (file.exists(final_ontology_rds) && file.exists(ontology_workflow_rds)) {
+      return(list(
+        ontology_workflow_rds = ontology_workflow_rds,
+        ontology_seurat_rds = final_ontology_rds,
+        subclustering_performed = isTRUE(cached_subcluster$subclustering_performed)
+      ))
+    }
   }
 
   context <- build_annotation_context()
@@ -762,10 +866,12 @@ run_subcluster_annotate_ontology <- function() {
 run_subcluster_annotate_inheritance <- function() {
   if (file.exists(inheritance_workflow_rds)) {
     cached_subcluster <- run_subcluster_find_markers()
-    return(list(
-      inheritance_workflow_rds = inheritance_workflow_rds,
-      subclustering_performed = isTRUE(cached_subcluster$subclustering_performed)
-    ))
+    if (file.exists(inheritance_workflow_rds)) {
+      return(list(
+        inheritance_workflow_rds = inheritance_workflow_rds,
+        subclustering_performed = isTRUE(cached_subcluster$subclustering_performed)
+      ))
+    }
   }
 
   context <- build_annotation_context()
@@ -806,12 +912,14 @@ run_subcluster_annotate_inheritance <- function() {
 run_finalize_subcluster_annotations <- function() {
   if (file.exists(final_inherited_rds) && file.exists(final_metadata_csv)) {
     cached_subcluster <- run_subcluster_find_markers()
-    return(list(
-      final_seurat_rds = final_inherited_rds,
-      final_metadata_csv = final_metadata_csv,
-      final_dimplot_pdf = if (file.exists(final_dimplot_pdf)) final_dimplot_pdf else NULL,
-      subclustering_performed = isTRUE(cached_subcluster$subclustering_performed)
-    ))
+    if (file.exists(final_inherited_rds) && file.exists(final_metadata_csv)) {
+      return(list(
+        final_seurat_rds = final_inherited_rds,
+        final_metadata_csv = final_metadata_csv,
+        final_dimplot_pdf = if (file.exists(final_dimplot_pdf)) final_dimplot_pdf else NULL,
+        subclustering_performed = isTRUE(cached_subcluster$subclustering_performed)
+      ))
+    }
   }
 
   run_subcluster_annotate_ontology()
@@ -844,15 +952,20 @@ run_finalize_subcluster_annotations <- function() {
   saveRDS(final_annotated, final_inherited_rds)
   utils::write.csv(final_annotated@meta.data, final_metadata_csv, row.names = TRUE)
 
-  grDevices::pdf(final_dimplot_pdf, width = 12, height = 5)
-  print(Seurat::DimPlot(final_annotated, group.by = "celltype_final", label = TRUE) + Seurat::NoLegend())
-  print(Seurat::DimPlot(final_annotated, group.by = "celltype_final_inherited", label = TRUE) + Seurat::NoLegend())
-  grDevices::dev.off()
+  reduction_to_use <- choose_dimplot_reduction(final_annotated)
+  final_dimplot_output <- NULL
+  if (!is.null(reduction_to_use)) {
+    grDevices::pdf(final_dimplot_pdf, width = 12, height = 5)
+    print(Seurat::DimPlot(final_annotated, group.by = "celltype_final", label = TRUE, reduction = reduction_to_use) + Seurat::NoLegend())
+    print(Seurat::DimPlot(final_annotated, group.by = "celltype_final_inherited", label = TRUE, reduction = reduction_to_use) + Seurat::NoLegend())
+    grDevices::dev.off()
+    final_dimplot_output <- final_dimplot_pdf
+  }
 
   list(
     final_seurat_rds = final_inherited_rds,
     final_metadata_csv = final_metadata_csv,
-    final_dimplot_pdf = final_dimplot_pdf,
+    final_dimplot_pdf = final_dimplot_output,
     subclustering_performed = TRUE
   )
 }

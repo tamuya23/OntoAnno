@@ -9,16 +9,21 @@ from typing import Any
 import yaml
 
 from .agent_memory import append_memory_entry, load_agent_memory, save_agent_memory
-from .utils import load_json, utc_now
+from .config import load_config
+from .review_packets import resolve_imported_parent_annotations
+from .utils import utc_now
 from .worker_runtime import (
     PARENT_BACKBONE_WORKERS,
     SUBCLUSTER_WORKERS,
+    clear_parent_dependent_outputs,
+    clear_rag_dependent_outputs,
     has_parent_annotation_outputs,
     run_generate_report_worker,
     run_gptanno_worker_chain,
     run_decide_rag_check_worker,
     run_human_review_worker,
     run_rag_check_workers,
+    worker_prerequisite_status,
 )
 
 
@@ -80,6 +85,15 @@ def _save_raw_config(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp_path, path)
 
 
+def _refresh_orchestrator_config(orchestrator: Any | None, config_path: Path) -> None:
+    if orchestrator is None:
+        return
+    repo_root = getattr(orchestrator, "repo_root", None)
+    if repo_root is None:
+        return
+    orchestrator.config = load_config(config_path, Path(repo_root))
+
+
 def _extract_quoted(text: str) -> list[str]:
     return [item.strip() for item in re.findall(r"['\"]([^'\"]+)['\"]", text) if item.strip()]
 
@@ -119,7 +133,7 @@ def _extract_celltype(text: str) -> str | None:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             value = re.sub(r"\s+", " ", match.group(1)).strip(" ,.;:")
-            if value and value.lower() not in {"it", "this", "that", "them"}:
+            if value and value.lower() not in {"it", "this", "that", "them", "this cell type", "that cell type"}:
                 return value
     return None
 
@@ -197,6 +211,14 @@ def _has_anaphora_reference(text: str) -> bool:
     return bool(re.search(r"\b(it|this|that|them|this one|that one|that cell type|this cell type)\b", text, flags=re.IGNORECASE))
 
 
+def _mentions_celltype(text: str, celltype: str) -> bool:
+    normalized_text = re.sub(r"\s+", " ", text).casefold()
+    normalized_celltype = re.sub(r"\s+", " ", celltype).strip().casefold()
+    if not normalized_celltype:
+        return False
+    return normalized_celltype in normalized_text
+
+
 def _resolve_external_evidence_celltype(
     *,
     raw_text: str,
@@ -207,7 +229,7 @@ def _resolve_external_evidence_celltype(
     if explicit:
         return explicit
     requested = (requested_celltype or "").strip()
-    if requested:
+    if requested and _mentions_celltype(raw_text, requested):
         return requested
     if context_celltype and _has_anaphora_reference(raw_text):
         return context_celltype.strip() or None
@@ -275,6 +297,9 @@ def parse_agent_request(text: str) -> dict[str, Any]:
 def _resolution_summary(config: dict[str, Any]) -> list[dict[str, str]]:
     work_dir = Path(str(config["project"]["work_dir"]))
     csv_path = work_dir / "annotate_parent" / "annotation_summary_scores.csv"
+    imported = resolve_imported_parent_annotations(config)
+    if not csv_path.exists() and imported.get("annotation_scores_csv"):
+        csv_path = Path(str(imported["annotation_scores_csv"]))
     if not csv_path.exists():
         return []
     with csv_path.open("r", encoding="utf-8") as handle:
@@ -309,10 +334,16 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         preference_type = str(intent.get("preference_type") or "").strip().lower()
         if preference_type == "granularity":
             target = str(intent.get("granularity") or "").strip().lower()
+            if target not in {"coarse", "balanced", "fine"}:
+                result["message"] = "Changing granularity requires one of: coarse, balanced, fine."
+                return result
             raw_config.setdefault("policy", {})
             previous = str(raw_config["policy"].get("granularity") or "balanced")
             raw_config["policy"]["granularity"] = target
             _save_raw_config(config_path, raw_config)
+            _refresh_orchestrator_config(orchestrator, config_path)
+            if orchestrator is not None:
+                clear_rag_dependent_outputs(orchestrator)
             result.update(
                 {
                     "applied": True,
@@ -347,19 +378,56 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
                 for row in entry["available_scores"]
                 if _normalize_resolution_name(row.get("resolution"))
             }
+            parent_readiness = worker_prerequisite_status(orchestrator, "assign_parent_labels")
+            can_run_parent_backbone = bool(parent_readiness.get("ok"))
 
             if desired_resolution_name in available_resolutions:
                 raw_config["annotation"]["forced_parent_resolution"] = str(desired_resolution)
                 _save_raw_config(config_path, raw_config)
-                executed = run_gptanno_worker_chain(
-                    orchestrator,
-                    ["select_parent_resolution", "assign_parent_labels"],
-                    force=True,
-                )
-                message = (
-                    f"Forced existing parent resolution '{desired_resolution}' and reassigned parent labels."
-                )
+                _refresh_orchestrator_config(orchestrator, config_path)
+                if can_run_parent_backbone:
+                    executed = run_gptanno_worker_chain(
+                        orchestrator,
+                        ["select_parent_resolution", "assign_parent_labels"],
+                        force=True,
+                    )
+                    message = (
+                        f"Forced existing parent resolution '{desired_resolution}' and reassigned parent labels."
+                    )
+                else:
+                    clear_parent_dependent_outputs(orchestrator)
+                    executed = [
+                        {
+                            "worker": "select_parent_resolution",
+                            "status": "completed",
+                            "notes": [
+                                "Configured imported parent annotation results to use this existing resolution; parent backbone was not rerun."
+                            ],
+                        }
+                    ]
+                    message = f"Selected existing imported parent resolution '{desired_resolution}' for downstream RAG/review."
             else:
+                if not can_run_parent_backbone:
+                    result.update(
+                        {
+                            "applied": False,
+                            "updated_memory": str(memory_path),
+                            "message": (
+                                f"Resolution '{desired_resolution}' is not available in current annotation outputs, "
+                                "and the parent backbone cannot run without raw Seurat input or inputs.bootstrap_parent."
+                            ),
+                            "next_step": "run_RAG_check" if has_parent_annotation_outputs(orchestrator) else "",
+                            "executed_workers": [
+                                {
+                                    "worker": "assign_parent_labels",
+                                    "status": "blocked",
+                                    "notes": parent_readiness.get("notes", []),
+                                    "artifacts": {"missing_prerequisites": parent_readiness.get("missing", [])},
+                                }
+                            ],
+                        }
+                    )
+                    return result
                 current_parent_res = raw_config["annotation"].get("parent_res")
                 if not isinstance(current_parent_res, list):
                     current_parent_res = [current_parent_res] if current_parent_res not in (None, "") else []
@@ -369,6 +437,7 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
                 raw_config["annotation"]["parent_res"] = current_parent_res
                 raw_config["annotation"]["forced_parent_resolution"] = str(desired_resolution)
                 _save_raw_config(config_path, raw_config)
+                _refresh_orchestrator_config(orchestrator, config_path)
                 executed = run_gptanno_worker_chain(
                     orchestrator,
                     PARENT_BACKBONE_WORKERS,
@@ -395,6 +464,24 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
     if intent_type == "run_parent_pipeline":
         if orchestrator is None:
             result["message"] = "run_parent_pipeline requires an active orchestrator."
+            return result
+        readiness = worker_prerequisite_status(orchestrator, "assign_parent_labels")
+        if not readiness.get("ok"):
+            result.update(
+                {
+                    "applied": False,
+                    "message": "Parent pipeline cannot run because required parent-backbone inputs are missing.",
+                    "next_step": "run_RAG_check" if has_parent_annotation_outputs(orchestrator) else "",
+                    "executed_workers": [
+                        {
+                            "worker": "assign_parent_labels",
+                            "status": "blocked",
+                            "notes": readiness.get("notes", []),
+                            "artifacts": {"missing_prerequisites": readiness.get("missing", [])},
+                        }
+                    ],
+                }
+            )
             return result
         executed = run_gptanno_worker_chain(
             orchestrator,
@@ -445,6 +532,24 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         if orchestrator is None:
             result["message"] = "human_review requires an active orchestrator."
             return result
+        readiness = worker_prerequisite_status(orchestrator, "human_review")
+        if not readiness.get("ok"):
+            result.update(
+                {
+                    "applied": False,
+                    "message": "Human review cannot start because review packets are not available yet.",
+                    "next_step": "run_RAG_check" if has_parent_annotation_outputs(orchestrator) else "run_parent_pipeline",
+                    "executed_workers": [
+                        {
+                            "worker": "human_review",
+                            "status": "blocked",
+                            "notes": readiness.get("notes", []),
+                            "artifacts": {"missing_prerequisites": readiness.get("missing", [])},
+                        }
+                    ],
+                }
+            )
+            return result
         controller_outputs, decide_worker = run_decide_rag_check_worker(
             orchestrator,
             phase="post_compare",
@@ -476,6 +581,24 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
     if intent_type == "run_report":
         if orchestrator is None:
             result["message"] = "run_report requires an active orchestrator."
+            return result
+        readiness = worker_prerequisite_status(orchestrator, "generate_report")
+        if not readiness.get("ok"):
+            result.update(
+                {
+                    "applied": False,
+                    "message": "Report generation cannot start because parent annotation outputs are not available yet.",
+                    "next_step": "run_parent_pipeline",
+                    "executed_workers": [
+                        {
+                            "worker": "generate_report",
+                            "status": "blocked",
+                            "notes": readiness.get("notes", []),
+                            "artifacts": {"missing_prerequisites": readiness.get("missing", [])},
+                        }
+                    ],
+                }
+            )
             return result
         outputs, worker_result = run_generate_report_worker(orchestrator, force=True)
         result.update(
@@ -535,6 +658,8 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
             message = f"Stored {len(markers)} custom marker(s) for '{celltype}'."
 
         memory_path = save_agent_memory(config, memory)
+        if orchestrator is not None:
+            clear_rag_dependent_outputs(orchestrator)
         result.update(
             {
                 "applied": True,
@@ -571,11 +696,37 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         values = raw_config["alignment"].get("celltypes_to_subcluster")
         if not isinstance(values, list):
             values = []
+        original_values = list(values)
         normalized_existing = {str(item).strip().casefold() for item in values if str(item).strip()}
         if celltype.casefold() not in normalized_existing:
             values.append(celltype)
         raw_config["alignment"]["celltypes_to_subcluster"] = values
         _save_raw_config(config_path, raw_config)
+        _refresh_orchestrator_config(orchestrator, config_path)
+        readiness = worker_prerequisite_status(orchestrator, "subcluster_find_markers")
+        if not readiness.get("ok"):
+            raw_config["alignment"]["celltypes_to_subcluster"] = original_values
+            _save_raw_config(config_path, raw_config)
+            _refresh_orchestrator_config(orchestrator, config_path)
+            result.update(
+                {
+                    "applied": False,
+                    "updated_config": str(config_path),
+                    "message": (
+                        f"Subcluster pipeline for '{celltype}' is configured but cannot run because required inputs are missing."
+                    ),
+                    "next_step": "run_RAG_check" if has_parent_annotation_outputs(orchestrator) else "",
+                    "executed_workers": [
+                        {
+                            "worker": "subcluster_find_markers",
+                            "status": "blocked",
+                            "notes": readiness.get("notes", []),
+                            "artifacts": {"missing_prerequisites": readiness.get("missing", [])},
+                        }
+                    ],
+                }
+            )
+            return result
         append_memory_entry(
             memory,
             "subcluster_requests",

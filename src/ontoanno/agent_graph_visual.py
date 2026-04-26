@@ -51,6 +51,7 @@ def route_intent(state: VisualState) -> str:
         "run_parent_pipeline": "intent_run_parent_pipeline",
         "run_subcluster_pipeline": "intent_run_subcluster_pipeline",
         "run_RAG_check": "intent_run_RAG_check",
+        "human_review": "intent_human_review",
         "change_annotation_preference": "intent_change_annotation_preference",
         "add_external_evidence": "intent_add_external_evidence",
         "extract_external_evidence": "intent_extract_external_evidence",
@@ -89,6 +90,7 @@ def build_graph() -> Any:
         "intent_run_parent_pipeline",
         "intent_run_subcluster_pipeline",
         "intent_run_RAG_check",
+        "intent_human_review",
         "intent_change_annotation_preference",
         "intent_add_external_evidence",
         "intent_extract_external_evidence",
@@ -155,6 +157,7 @@ def build_graph() -> Any:
             "intent_run_parent_pipeline": "intent_run_parent_pipeline",
             "intent_run_subcluster_pipeline": "intent_run_subcluster_pipeline",
             "intent_run_RAG_check": "intent_run_RAG_check",
+            "intent_human_review": "intent_human_review",
             "intent_change_annotation_preference": "intent_change_annotation_preference",
             "intent_add_external_evidence": "intent_add_external_evidence",
             "intent_extract_external_evidence": "intent_extract_external_evidence",
@@ -191,6 +194,8 @@ def build_graph() -> Any:
     builder.add_edge("rag_run_llm_compare", "rag_decide_post_compare")
     builder.add_edge("rag_decide_post_compare", "rag_human_review")
     builder.add_edge("rag_human_review", "llm_summary_and_suggest_next")
+
+    builder.add_edge("intent_human_review", "rag_decide_post_compare")
 
     builder.add_edge("intent_change_annotation_preference", "pref_update_config_or_memory")
     builder.add_conditional_edges(

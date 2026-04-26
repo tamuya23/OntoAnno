@@ -46,7 +46,17 @@ for (col_name in names(decision_df)) {
 
 label_map <- setNames(decision_df$final_label, decision_df$cluster_id)
 
-meta$celltype_parent_reviewed <- unname(label_map[cluster_ids])
+reviewed_labels <- unname(label_map[cluster_ids])
+fallback_labels <- if ("celltype_parent" %in% colnames(meta)) {
+  as.character(meta$celltype_parent)
+} else {
+  rep(NA_character_, nrow(meta))
+}
+meta$celltype_parent_reviewed <- ifelse(
+  is.na(reviewed_labels) | reviewed_labels == "",
+  fallback_labels,
+  reviewed_labels
+)
 seurat_obj@meta.data <- meta
 
 cluster_decision_cols <- intersect(

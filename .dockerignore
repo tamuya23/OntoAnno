@@ -13,4 +13,7 @@ work
 backups
 data
 .ontoanno.env
-
+.env
+.apptainer
+*.sif
+*.sif.*

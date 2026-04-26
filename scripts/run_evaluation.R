@@ -33,6 +33,14 @@ ensure_parent_dir <- function(path) {
   dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
 }
 
+load_cell_ontology <- function() {
+  ontology_obo <- spec$runtime$ontology_obo %||% Sys.getenv("ONTOANNO_CL_OBO", unset = "")
+  if (!is.null(ontology_obo) && nzchar(ontology_obo) && file.exists(ontology_obo)) {
+    return(ontologyIndex::get_ontology(ontology_obo, extract_tags = "everything"))
+  }
+  ontologyIndex::get_ontology("http://purl.obolibrary.org/obo/cl.obo", extract_tags = "everything")
+}
+
 detect_join_key <- function(df, target_ids) {
   candidates <- c("_index", "cell_id", "cell", "barcode")
   for (candidate in candidates) {
@@ -128,7 +136,7 @@ score_result_rds <- file.path(evaluation_dir, "score_result.rds")
 ontology_comparison_csv <- file.path(evaluation_dir, "ontology_comparison.csv")
 annotation_summary_csv <- file.path(evaluation_dir, "annotation_summary.csv")
 
-cl <- ontologyIndex::get_ontology("http://purl.obolibrary.org/obo/cl.obo", extract_tags = "everything")
+cl <- load_cell_ontology()
 graph <- build_ontology_graph(cl)
 ancestor_type_map <- build_ancestor_type_map(cl)
 

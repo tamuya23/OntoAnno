@@ -383,7 +383,7 @@ def build_controller(
     if outputs_path.exists() and not force:
         cached = load_json(outputs_path)
         cached_phase = str(cached.get("phase") or "auto")
-        if phase == "auto" or cached_phase == phase:
+        if phase != "auto" and cached_phase == phase:
             return cached
 
     payload = plan_next_actions(config=config, run_dir=run_dir, phase=phase)

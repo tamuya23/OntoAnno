@@ -179,7 +179,6 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
     if needs_annotation:
         required_keys.extend(
             [
-                "inputs.seurat_rds",
                 "llm.annotation.provider",
                 "llm.annotation.model",
                 "annotation.parent_res",
@@ -213,7 +212,13 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
     warnings.extend(policy_validation["warnings"])
 
     if needs_annotation:
-        has_imported_parent = bool(config["inputs"].get("annotation_parent_rds"))
+        bootstrap_parent = config["inputs"].get("bootstrap_parent")
+        has_imported_parent = bool(
+            config["inputs"].get("annotation_output_dir")
+            or config["inputs"].get("annotation_parent_rds")
+            or (isinstance(bootstrap_parent, dict) and bootstrap_parent.get("annotation_output_dir"))
+            or (isinstance(bootstrap_parent, dict) and bootstrap_parent.get("annotation_parent_rds"))
+        )
         seurat_rds = config["inputs"].get("seurat_rds")
         if not seurat_rds and not has_imported_parent:
             errors.append("Missing required config key: inputs.seurat_rds")
@@ -226,6 +231,16 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
             marker_path = Path(marker_genes_dir)
             if not marker_path.exists() or not marker_path.is_dir():
                 errors.append(f"Marker genes directory not found: {marker_path}")
+            else:
+                parent_res = config.get("annotation", {}).get("parent_res", [])
+                if isinstance(parent_res, list):
+                    for resolution in parent_res:
+                        marker_file = marker_path / f"markers_res_{resolution}.rds"
+                        if not marker_file.exists():
+                            errors.append(
+                                "Marker genes directory is missing required resolution file: "
+                                f"{marker_file}"
+                            )
         annotation_output_dir = config["inputs"].get("annotation_output_dir")
         if annotation_output_dir and not Path(annotation_output_dir).is_dir():
             errors.append(f"Imported annotation output directory not found: inputs.annotation_output_dir={annotation_output_dir}")
@@ -237,7 +252,6 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
             value = config["inputs"].get(key)
             if value and not Path(value).is_dir():
                 errors.append(f"Imported parent annotation directory not found: inputs.{key}={value}")
-        bootstrap_parent = config["inputs"].get("bootstrap_parent")
         if isinstance(bootstrap_parent, dict):
             annotation_output_dir = bootstrap_parent.get("annotation_output_dir")
             if annotation_output_dir and not Path(annotation_output_dir).is_dir():
@@ -319,7 +333,7 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
 
     if needs_annotation:
         provider = config["llm"]["annotation"]["provider"]
-        api_key = config["llm"]["annotation"].get("api_key")
+        api_key = config["llm"]["annotation"].get("api_key") or os.getenv("OPENAI_API_KEY")
         if provider in REMOTE_PROVIDERS and not api_key:
             errors.append(f"Missing API key for annotation provider '{provider}'")
 
@@ -327,7 +341,7 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
     if needs_pdf and has_pdf_inputs:
         if not isinstance(pdf_env, dict):
             errors.append("llm.pdfmarkers.env must be a mapping")
-        elif not pdf_env.get("OPENAI_API_KEY"):
+        elif not pdf_env.get("OPENAI_API_KEY") and not os.getenv("OPENAI_API_KEY"):
             errors.append("Missing OPENAI_API_KEY in llm.pdfmarkers.env for pdfmarkers stage")
 
     if needs_annotation:

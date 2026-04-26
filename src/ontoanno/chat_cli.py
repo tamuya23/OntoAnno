@@ -10,7 +10,7 @@ def _chat_print(message: str) -> None:
     print(f"[OntoAnno] {message}", flush=True)
 
 
-def _render_router_result(result: dict[str, Any]) -> None:
+def render_router_result(result: dict[str, Any]) -> None:
     if result.get("tool_calls"):
         for item in result["tool_calls"]:
             print(f"Executed tool: {item['tool_name']}")
@@ -98,6 +98,6 @@ def run_chat_session(
             _chat_print(f"Agent error: {exc}")
             continue
 
-        _render_router_result(result)
+        render_router_result(result)
         if result.get("session_path"):
             _chat_print(f"Session: {result['session_path']}")

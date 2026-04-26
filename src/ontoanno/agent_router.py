@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
 from .agent_memory import load_agent_memory
-from .agent_requests import _extract_celltype, apply_agent_request
+from .agent_requests import _extract_celltype, _has_anaphora_reference, _mentions_celltype, apply_agent_request
+from .openai_client import OpenAIRequestError, chat_completions_url, post_openai_json
+from .review_packets import resolve_imported_parent_annotations
 from .agent_session import (
     load_agent_session,
     reset_agent_session,
@@ -20,24 +21,13 @@ from .agent_session import (
 from .utils import load_json
 
 
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-
-
 class AgentRouterError(RuntimeError):
     pass
 
 
 def _chat_completions_url(config: dict[str, Any]) -> str:
     llm_config = config["llm"]["annotation"]
-    base = (
-        llm_config.get("api_url")
-        or os.getenv("OPENAI_BASE_URL")
-        or DEFAULT_OPENAI_BASE_URL
-    )
-    base = str(base).rstrip("/")
-    if base.endswith("/chat/completions"):
-        return base
-    return f"{base}/chat/completions"
+    return chat_completions_url(llm_config.get("api_url"))
 
 
 def _router_system_prompt() -> str:
@@ -228,28 +218,45 @@ def _tool_schemas() -> list[dict[str, Any]]:
 
 def _resolution_summary(config: dict[str, Any]) -> list[dict[str, str]]:
     csv_path = Path(str(config["project"]["work_dir"])) / "annotate_parent" / "annotation_summary_scores.csv"
+    imported = resolve_imported_parent_annotations(config)
+    if not csv_path.exists() and imported.get("annotation_scores_csv"):
+        csv_path = Path(str(imported["annotation_scores_csv"]))
     if not csv_path.exists():
         return []
     rows: list[dict[str, str]] = []
     with csv_path.open("r", encoding="utf-8") as handle:
-        header = handle.readline().strip().split(",")
-        for line in handle:
-            values = line.strip().split(",")
-            row = {header[i]: values[i] if i < len(values) else "" for i in range(len(header))}
-            rows.append(row)
+        rows = list(csv.DictReader(handle))
     return rows[:5]
 
 
 def _current_parent_resolution(config: dict[str, Any]) -> str:
-    rows = _resolution_summary(config)
-    if rows:
-        selected = str(rows[0].get("resolution") or "").strip()
-        if selected:
-            return selected
     annotation = config.get("annotation", {}) if isinstance(config.get("annotation"), dict) else {}
     forced = str(annotation.get("forced_parent_resolution") or "").strip()
     if forced:
         return forced
+    imported = resolve_imported_parent_annotations(config)
+    if imported.get("best_resolution_value"):
+        return str(imported["best_resolution_value"])
+    best_json = Path(str(config["project"]["work_dir"])) / "annotate_parent" / "best_parent_resolution.json"
+    if best_json.exists():
+        payload = load_json(best_json)
+        selected = str(payload.get("best_resolution_value") or payload.get("best_resolution") or "").strip()
+        if selected:
+            return selected.removeprefix("res_")
+    rows = _resolution_summary(config)
+    best_row: dict[str, str] | None = None
+    best_score: float | None = None
+    for row in rows:
+        try:
+            score = float(row.get("composite_score") or "")
+        except ValueError:
+            continue
+        if best_score is None or score > best_score:
+            best_score = score
+            best_row = row
+    selected = str((best_row or (rows[0] if rows else {})).get("resolution") or "").strip()
+    if selected:
+        return selected.removeprefix("res_")
     return "unknown"
 
 
@@ -382,7 +389,7 @@ def _resolve_external_evidence_target(
     if explicit:
         return explicit
     requested = (requested_celltype or "").strip()
-    if requested:
+    if requested and _mentions_celltype(user_request, requested):
         return requested
     state = session.get("state", {}) if isinstance(session.get("state"), dict) else {}
     focus = str(state.get("active_focus_celltype") or "").strip()
@@ -401,7 +408,7 @@ def _call_openai_router(
     provider = str(llm_config["provider"]).lower()
     if provider != "openai":
         raise AgentRouterError(f"Agent ask/router currently supports only provider 'openai'; got '{provider}'")
-    api_key = llm_config.get("api_key")
+    api_key = llm_config.get("api_key") or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise AgentRouterError("Missing API key for llm.annotation")
     payload = {
@@ -411,23 +418,15 @@ def _call_openai_router(
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-    request = urllib.request.Request(
-        _chat_completions_url(config),
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise AgentRouterError(f"LLM API HTTP {exc.code}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise AgentRouterError(f"LLM API request failed: {exc.reason}") from exc
+        return post_openai_json(
+            url=_chat_completions_url(config),
+            payload=payload,
+            api_key=str(api_key),
+            timeout=180,
+        )
+    except OpenAIRequestError as exc:
+        raise AgentRouterError(str(exc)) from exc
 
 
 def _intent_from_tool(
@@ -499,11 +498,12 @@ def route_agent_request(
     config: dict[str, Any],
     orchestrator: Any,
     user_message: str,
-    apply: bool = False,
+    apply: bool = True,
     reset_session: bool = False,
     max_rounds: int = 2,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    del apply, max_rounds
     if reset_session:
         reset_agent_session(config)
     session = load_agent_session(config)
@@ -535,7 +535,7 @@ def route_agent_request(
         session["turn_count"] = int(session.get("turn_count", 0)) + 1
         save_agent_session(config, session)
         return {
-            "mode": "preview" if not apply else "applied",
+            "mode": "answered",
             "assistant_message": gate_text,
             "tool_calls": executed_tools,
             "raw_responses": raw_responses,
@@ -560,7 +560,7 @@ def route_agent_request(
         session["turn_count"] = int(session.get("turn_count", 0)) + 1
         save_agent_session(config, session)
         return {
-            "mode": "preview" if not apply else "applied",
+            "mode": "answered",
             "assistant_message": assistant_text,
             "tool_calls": executed_tools,
             "raw_responses": raw_responses,
@@ -618,25 +618,9 @@ def route_agent_request(
                 }
             else:
                 intent["resolved_celltype"] = resolved_celltype
-                if apply:
-                    execution_result = apply_agent_request(config, intent, orchestrator=orchestrator)
-                else:
-                    execution_result = {
-                        "intent": intent,
-                        "applied": False,
-                        "message": "Preview only. Tool call not executed.",
-                        "next_step": "",
-                        "resolved_celltype": resolved_celltype,
-                    }
-        elif apply:
-            execution_result = apply_agent_request(config, intent, orchestrator=orchestrator)
+                execution_result = apply_agent_request(config, intent, orchestrator=orchestrator)
         else:
-            execution_result = {
-                "intent": intent,
-                "applied": False,
-                "message": "Preview only. Tool call not executed.",
-                "next_step": "",
-            }
+            execution_result = apply_agent_request(config, intent, orchestrator=orchestrator)
 
         executed_tools.append(
             {
@@ -697,7 +681,7 @@ def route_agent_request(
     session["turn_count"] = int(session.get("turn_count", 0)) + 1
     save_agent_session(config, session)
     return {
-        "mode": "preview" if not apply else "applied",
+        "mode": "applied",
         "assistant_message": assistant_text,
         "tool_calls": executed_tools,
         "suggested_next_tools": suggested_next_tools,

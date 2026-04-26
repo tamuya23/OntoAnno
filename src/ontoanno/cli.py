@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 from .agent_router import route_agent_request
-from .chat_cli import run_chat_session
-from .config import load_config
+from .chat_cli import render_router_result, run_chat_session
+from .config import load_config, validate_config
 from .interactive_cli import run_interactive_review
 from .orchestrator import Orchestrator, format_validation_result
 from .utils import GPTANNO_TOOLS, STAGES
@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     review_packets = subparsers.add_parser(
         "review-packets",
-        help="Build review packets from existing subcluster outputs",
+        help="Build review packets from existing parent annotation outputs",
     )
     review_packets.add_argument("--config", required=True)
     review_packets.add_argument("--force", action="store_true")
@@ -147,6 +147,11 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = _repo_root()
     config = load_config(args.config, repo_root)
 
+    if args.command == "validate":
+        result = validate_config(config)
+        print(format_validation_result(result))
+        return 0 if not result["errors"] else 1
+
     if args.command == "pdfmarkers":
         if args.pdf:
             config["_runtime"]["pdf_override_files"] = [_resolve_cli_path(args.pdf)]
@@ -154,11 +159,6 @@ def main(argv: list[str] | None = None) -> int:
             config["_runtime"]["pdf_override_dir"] = _resolve_cli_path(args.pdf_dir)
 
     orchestrator = Orchestrator(repo_root, config)
-
-    if args.command == "validate":
-        result = orchestrator.validate()
-        print(format_validation_result(result))
-        return 0 if not result["errors"] else 1
 
     if args.command == "run":
         run_dir = orchestrator.run(from_stage=args.from_stage, to_stage=args.to_stage, force=args.force)
@@ -223,36 +223,9 @@ def main(argv: list[str] | None = None) -> int:
             apply=True,
             reset_session=args.reset_session,
         )
-        if result.get("tool_calls"):
-            for item in result["tool_calls"]:
-                print(f"Executed tool: {item['tool_name']}")
-                print(f"Arguments: {item['arguments']}")
-                tool_result = item.get("result") or {}
-                if tool_result.get("message"):
-                    print(f"Result: {tool_result['message']}")
-                if tool_result.get("updated_config"):
-                    print(f"Updated config: {tool_result['updated_config']}")
-                if tool_result.get("updated_memory"):
-                    print(f"Updated memory: {tool_result['updated_memory']}")
-                if tool_result.get("executed_workers"):
-                    print("Executed workers:")
-                    for worker in tool_result["executed_workers"]:
-                        label = worker.get("label") or worker.get("worker") or worker.get("tool")
-                        print(f"  - {label}")
-                if tool_result.get("next_step"):
-                    print(f"Suggested next step: {tool_result['next_step']}")
-                print("")
-        if result.get("suggested_next_tools"):
-            print("Suggested next actions:")
-            for item in result["suggested_next_tools"]:
-                print(f"  - {item['tool_name']}: {item['arguments']}")
-            print("")
+        render_router_result(result)
         if result.get("session_path"):
             print(f"Session: {result['session_path']}")
-        if result.get("assistant_message"):
-            print(result["assistant_message"])
-        elif not result.get("tool_calls"):
-            print("No tool call proposed.")
         return 0
 
     if args.command == "chat":
@@ -322,3 +295,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.print_help(sys.stderr)
     return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

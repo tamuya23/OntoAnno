@@ -154,8 +154,10 @@ def resolve_imported_parent_annotations(config: dict[str, Any]) -> dict[str, Any
         bootstrap.get("parent_metadata_csv"),
         _infer_parent_metadata_path(annotation_parent_path),
     )
+    annotation_cfg = config.get("annotation", {}) if isinstance(config.get("annotation"), dict) else {}
     best_resolution = _normalize_resolution_name(
-        inputs.get("best_resolution")
+        annotation_cfg.get("forced_parent_resolution")
+        or inputs.get("best_resolution")
         or bootstrap.get("best_resolution")
         or _derive_best_resolution(annotation_scores_csv)
     )
@@ -245,6 +247,13 @@ def build_review_packets(
         "best_resolution": best_resolution,
         "cluster_col": cluster_col,
     }
+    markers_best_rds = (
+        Path(str(markers_dir)) / f"markers_{best_resolution}.rds"
+        if markers_dir and best_resolution
+        else None
+    )
+    if markers_best_rds is not None:
+        required_inputs["markers_best_rds"] = str(markers_best_rds)
     missing = [
         key for key, value in required_inputs.items()
         if value in (None, "") or (key.endswith("_rds") or key.endswith("_csv") or key.endswith("_dir")) and not Path(str(value)).exists()

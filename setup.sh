@@ -128,6 +128,7 @@ print_line "Installing OntoAnno and the web UI..."
 (
   cd "${ROOT_DIR}"
   "${PYTHON_BIN}" -m pip install -e ".[ui]"
+  "${PYTHON_BIN}" -m pip install -r GPTAnno/PDF2markers/requirements.txt
 )
 
 DETECTED_RSCRIPT="$(find_rscript || true)"

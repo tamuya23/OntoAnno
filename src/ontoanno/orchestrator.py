@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import copy
 import shlex
+import shutil
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Any, Callable
 
@@ -140,6 +143,213 @@ class Orchestrator:
         self._save_state()
         self._save_manifest()
 
+    def _remove_recorded_outputs(self, stages: tuple[str, ...], paths: tuple[Path, ...] = ()) -> None:
+        for path in paths:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+
+        outputs = self.manifest.get("outputs")
+        if isinstance(outputs, dict):
+            for stage in stages:
+                outputs.pop(stage, None)
+            gptanno_tools = outputs.get("gptanno_tools")
+            if isinstance(gptanno_tools, dict):
+                for stage in stages:
+                    gptanno_tools.pop(stage, None)
+        for stage in stages:
+            if stage in self.state.get("stages", {}):
+                self.state["stages"][stage] = {"status": "pending"}
+        self._save_state()
+        self._save_manifest()
+
+    def _remove_subcluster_annotation_dirs(self) -> None:
+        subcluster_dir = self.work_dir / "annotate_subclusters"
+        if not subcluster_dir.exists():
+            return
+        for path in subcluster_dir.glob("subclusters_res*/*/annotation_ontology"):
+            if path.is_dir():
+                shutil.rmtree(path)
+        for path in subcluster_dir.glob("subclusters_res*/*/annotation_marker_inheritance"):
+            if path.is_dir():
+                shutil.rmtree(path)
+
+    def clear_report_outputs(self) -> None:
+        self._remove_recorded_outputs(
+            ("report",),
+            (
+                self.run_dir / "report_assets",
+                self.run_dir / "report.html",
+                self.run_dir / "report.pdf",
+            ),
+        )
+
+    def clear_rag_dependent_outputs(self) -> None:
+        self._remove_recorded_outputs(
+            ("ontology_relations", "llm_compare", "controller", "reviewed_parent"),
+            tuple(self.run_dir / stage for stage in ("ontology_relations", "llm_compare", "controller", "reviewed_parent")),
+        )
+        self.clear_report_outputs()
+
+    def clear_after_ontology_outputs(self) -> None:
+        self._remove_recorded_outputs(
+            ("llm_compare", "controller", "reviewed_parent"),
+            tuple(self.run_dir / stage for stage in ("llm_compare", "controller", "reviewed_parent")),
+        )
+        self.clear_report_outputs()
+
+    def clear_after_llm_outputs(self) -> None:
+        self._remove_recorded_outputs(
+            ("controller", "reviewed_parent"),
+            tuple(self.run_dir / stage for stage in ("controller", "reviewed_parent")),
+        )
+        self.clear_report_outputs()
+
+    def clear_after_controller_outputs(self) -> None:
+        self._remove_recorded_outputs(("reviewed_parent",), (self.run_dir / "reviewed_parent",))
+        self.clear_report_outputs()
+
+    def clear_subcluster_outputs(self) -> None:
+        subcluster_workers = (
+            "annotate_subclusters",
+            "subcluster_find_markers",
+            "subcluster_annotate_ontology",
+            "subcluster_annotate_inheritance",
+            "finalize_subcluster_annotations",
+        )
+        self._remove_recorded_outputs(subcluster_workers, (self.work_dir / "annotate_subclusters",))
+
+    def clear_after_subcluster_find_markers_outputs(self) -> None:
+        subcluster_dir = self.work_dir / "annotate_subclusters"
+        self._remove_subcluster_annotation_dirs()
+        self._remove_recorded_outputs(
+            (
+                "annotate_subclusters",
+                "subcluster_annotate_ontology",
+                "subcluster_annotate_inheritance",
+                "finalize_subcluster_annotations",
+            ),
+            (
+                subcluster_dir / "ontology_workflow.rds",
+                subcluster_dir / "marker_inheritance_workflow.rds",
+                subcluster_dir / "seurat_ontology_annotated.rds",
+                subcluster_dir / "seurat_final_annotated.rds",
+                subcluster_dir / "metadata_final.csv",
+                subcluster_dir / "DimPlot_celltype_final.pdf",
+            ),
+        )
+        self.clear_report_outputs()
+
+    def clear_after_subcluster_annotation_outputs(self) -> None:
+        subcluster_dir = self.work_dir / "annotate_subclusters"
+        self._remove_recorded_outputs(
+            ("annotate_subclusters", "finalize_subcluster_annotations"),
+            (
+                subcluster_dir / "seurat_final_annotated.rds",
+                subcluster_dir / "metadata_final.csv",
+                subcluster_dir / "DimPlot_celltype_final.pdf",
+            ),
+        )
+        self.clear_report_outputs()
+
+    def clear_after_parent_tool_outputs(self, tool: str) -> None:
+        parent_dir = self.work_dir / "annotate_parent"
+        prediction_dir = parent_dir / "prediction"
+        if tool == "preprocess_parent":
+            self._remove_recorded_outputs(
+                (
+                    "annotate_parent",
+                    "cluster_parent_markers",
+                    "annotate_parent_raw",
+                    "map_parent_ontology",
+                    "select_parent_resolution",
+                    "assign_parent_labels",
+                ),
+                (
+                    parent_dir / "seurat_clustered.rds",
+                    parent_dir / "marker_genes",
+                    prediction_dir,
+                    parent_dir / "annotation_parent.rds",
+                    parent_dir / "annotation_summary_scores.csv",
+                    parent_dir / "parent_ontology_mapping.rds",
+                    parent_dir / "parent_ontology_mapping.csv",
+                    parent_dir / "best_parent_resolution.json",
+                    parent_dir / "seurat_parent_annotated.rds",
+                ),
+            )
+        elif tool == "cluster_parent_markers":
+            self._remove_recorded_outputs(
+                (
+                    "annotate_parent",
+                    "annotate_parent_raw",
+                    "map_parent_ontology",
+                    "select_parent_resolution",
+                    "assign_parent_labels",
+                ),
+                (
+                    prediction_dir,
+                    parent_dir / "annotation_parent.rds",
+                    parent_dir / "annotation_summary_scores.csv",
+                    parent_dir / "parent_ontology_mapping.rds",
+                    parent_dir / "parent_ontology_mapping.csv",
+                    parent_dir / "best_parent_resolution.json",
+                    parent_dir / "seurat_parent_annotated.rds",
+                ),
+            )
+        elif tool == "annotate_parent_raw":
+            self._remove_recorded_outputs(
+                (
+                    "annotate_parent",
+                    "map_parent_ontology",
+                    "select_parent_resolution",
+                    "assign_parent_labels",
+                ),
+                (
+                    parent_dir / "annotation_summary_scores.csv",
+                    parent_dir / "parent_ontology_mapping.rds",
+                    parent_dir / "parent_ontology_mapping.csv",
+                    parent_dir / "best_parent_resolution.json",
+                    parent_dir / "seurat_parent_annotated.rds",
+                ),
+            )
+        elif tool == "select_parent_resolution":
+            self._remove_recorded_outputs(
+                ("annotate_parent", "assign_parent_labels"),
+                (parent_dir / "seurat_parent_annotated.rds",),
+            )
+        elif tool == "assign_parent_labels":
+            self._remove_recorded_outputs(("annotate_parent",), ())
+
+        self.clear_parent_dependent_outputs()
+
+    def clear_parent_dependent_outputs(self) -> None:
+        self.clear_subcluster_outputs()
+        self.clear_rag_dependent_outputs()
+
+    def _outputs_artifacts_exist(self, outputs: dict[str, Any]) -> bool:
+        path_suffixes = (
+            "_rds",
+            "_csv",
+            "_json",
+            "_pdf",
+            "_png",
+            "_html",
+            "_txt",
+            "_dir",
+            "_folder",
+        )
+        for key, value in outputs.items():
+            if value in (None, ""):
+                continue
+            if not isinstance(value, str):
+                continue
+            if key == "log":
+                continue
+            if key.endswith(path_suffixes) and not Path(value).exists():
+                return False
+        return True
+
     def _skip_stage(self, stage: str, message: str) -> None:
         self.state["stages"][stage].update(
             {"status": "skipped", "message": message, "completed_at": utc_now()}
@@ -227,11 +437,15 @@ class Orchestrator:
                 self._record_stage_outputs(stage, outputs)
                 self._emit(f"Stage '{stage}' completed.")
             except Exception as exc:  # noqa: BLE001
+                error_log = self.logs_dir / f"{stage}.error.log"
+                ensure_dir(error_log.parent)
+                error_log.write_text(traceback.format_exc(), encoding="utf-8")
                 self.state["stages"][stage].update(
                     {
                         "status": "failed",
                         "completed_at": utc_now(),
                         "error": str(exc),
+                        "error_log": str(error_log),
                         "message": "failed",
                     }
                 )
@@ -251,6 +465,34 @@ class Orchestrator:
         outputs_json = self.specs_dir / f"gptanno-tool-{tool}.outputs.json"
         return spec_path, outputs_json
 
+    def _redacted_llm_config(self) -> dict[str, Any]:
+        llm = copy.deepcopy(self.config.get("llm", {}))
+        for section in llm.values():
+            if not isinstance(section, dict):
+                continue
+            section["api_key"] = None
+            env = section.get("env")
+            if isinstance(env, dict):
+                for key in list(env):
+                    if "KEY" in str(key).upper() or "TOKEN" in str(key).upper() or "PASSWORD" in str(key).upper():
+                        env[key] = None
+        return llm
+
+    def _llm_env(self) -> dict[str, str]:
+        env: dict[str, str] = {}
+        for section in (self.config.get("llm", {}) or {}).values():
+            if not isinstance(section, dict):
+                continue
+            api_key = section.get("api_key")
+            if api_key and not env.get("OPENAI_API_KEY"):
+                env["OPENAI_API_KEY"] = str(api_key)
+            section_env = section.get("env")
+            if isinstance(section_env, dict):
+                for key, value in section_env.items():
+                    if value not in (None, ""):
+                        env[str(key)] = str(value)
+        return env
+
     def _base_annotation_spec(self, *, stage: str, outputs_json: Path) -> dict[str, Any]:
         return {
             "stage": stage,
@@ -258,9 +500,12 @@ class Orchestrator:
             "gptanno_path": self.config["_runtime"]["gptanno_path"],
             "work_dir": str(self.work_dir),
             "inputs": self.config["inputs"],
-            "llm": self.config["llm"],
+            "llm": self._redacted_llm_config(),
             "annotation": self.config["annotation"],
             "alignment": self.config["alignment"],
+            "runtime": {
+                "ontology_obo": self.config.get("_runtime", {}).get("ontology_obo"),
+            },
             "outputs_json": str(outputs_json),
         }
 
@@ -272,6 +517,7 @@ class Orchestrator:
         self._run_subprocess(
             [self.config["_runtime"]["rscript"], self.config["_runtime"]["gptanno_tool_runner"], str(spec_path)],
             log_path=log_path,
+            env=self._llm_env(),
         )
         outputs = load_json(outputs_json)
         outputs["log"] = str(log_path)
@@ -299,6 +545,7 @@ class Orchestrator:
         self._run_subprocess(
             [self.config["_runtime"]["rscript"], self.config["_runtime"]["annotation_runner"], str(spec_path)],
             log_path=log_path,
+            env=self._llm_env(),
         )
         outputs = load_json(outputs_json)
         outputs["log"] = str(log_path)
@@ -315,6 +562,7 @@ class Orchestrator:
         self._run_subprocess(
             [self.config["_runtime"]["rscript"], self.config["_runtime"]["annotation_runner"], str(spec_path)],
             log_path=log_path,
+            env=self._llm_env(),
         )
         outputs = load_json(outputs_json)
         outputs["log"] = str(log_path)
@@ -459,6 +707,9 @@ class Orchestrator:
             "inputs": self.config["inputs"],
             "evaluation": self.config["evaluation"],
             "baseline_results": baseline_results,
+            "runtime": {
+                "ontology_obo": self.config.get("_runtime", {}).get("ontology_obo"),
+            },
             "outputs_json": str(outputs_json),
         }
         dump_json(spec_path, spec)
@@ -466,6 +717,7 @@ class Orchestrator:
         self._run_subprocess(
             [self.config["_runtime"]["rscript"], self.config["_runtime"]["evaluation_runner"], str(spec_path)],
             log_path=log_path,
+            env=self._llm_env(),
         )
         outputs = load_json(outputs_json)
         outputs["baseline_results"] = baseline_results
@@ -501,6 +753,8 @@ class Orchestrator:
         )
         self.manifest["outputs"]["review_packets"] = outputs
         self._save_manifest()
+        if force:
+            self.clear_rag_dependent_outputs()
         return outputs
 
     def generate_ontology_relations(
@@ -518,6 +772,8 @@ class Orchestrator:
         )
         self.manifest["outputs"]["ontology_relations"] = outputs
         self._save_manifest()
+        if force:
+            self.clear_after_ontology_outputs()
         return outputs
 
     def generate_llm_compare(
@@ -536,6 +792,8 @@ class Orchestrator:
         )
         self.manifest["outputs"]["llm_compare"] = outputs
         self._save_manifest()
+        if force:
+            self.clear_after_llm_outputs()
         return outputs
 
     def generate_controller(
@@ -552,6 +810,8 @@ class Orchestrator:
         )
         self.manifest["outputs"]["controller"] = outputs
         self._save_manifest()
+        if force:
+            self.clear_after_controller_outputs()
         return outputs
 
     def generate_gptanno_tool(
@@ -563,11 +823,31 @@ class Orchestrator:
         outputs_root = self.manifest.setdefault("outputs", {})
         gptanno_outputs = outputs_root.setdefault("gptanno_tools", {})
         if not force and tool in gptanno_outputs:
-            self._emit(f"GPTAnno tool '{tool}' already completed; reusing recorded outputs.")
-            return gptanno_outputs[tool]
+            cached_outputs = gptanno_outputs[tool]
+            if isinstance(cached_outputs, dict) and self._outputs_artifacts_exist(cached_outputs):
+                self._emit(f"GPTAnno tool '{tool}' already completed; reusing recorded outputs.")
+                return cached_outputs
+            self._emit(f"GPTAnno tool '{tool}' recorded outputs are stale; rerunning.")
         outputs = self._run_gptanno_tool(tool)
         gptanno_outputs[tool] = outputs
         self._save_manifest()
+        if force:
+            if tool in {
+                "preprocess_parent",
+                "cluster_parent_markers",
+                "annotate_parent_raw",
+                "select_parent_resolution",
+                "assign_parent_labels",
+            }:
+                self.clear_after_parent_tool_outputs(tool)
+            elif tool == "map_parent_ontology":
+                self.clear_rag_dependent_outputs()
+            elif tool == "subcluster_find_markers":
+                self.clear_after_subcluster_find_markers_outputs()
+            elif tool in {"subcluster_annotate_ontology", "subcluster_annotate_inheritance"}:
+                self.clear_after_subcluster_annotation_outputs()
+            elif tool == "finalize_subcluster_annotations":
+                self.clear_report_outputs()
         return outputs
 
 

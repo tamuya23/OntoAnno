@@ -189,9 +189,7 @@ def _load_runtime(config_path: str) -> tuple[dict[str, Any], Orchestrator]:
 
 
 def _refresh_runtime() -> tuple[dict[str, Any], Orchestrator]:
-    config, orchestrator = _load_runtime(str(_config_path()))
-    orchestrator = Orchestrator(_repo_root(), config)
-    return config, orchestrator
+    return _load_runtime(str(_config_path()))
 
 
 def _resolution_value(value: Any) -> str:
@@ -515,9 +513,10 @@ def _phase_completed(phase: str, orchestrator: Orchestrator) -> bool:
     imported = resolve_imported_parent_annotations(orchestrator.config)
     if phase == "Cluster":
         gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
-        preflight_done = str((stages.get("preflight") or {}).get("status") or "") == "completed"
         imported_markers = imported.get("markers_dir")
-        return bool(gptanno.get("cluster_parent_markers")) or bool(imported_markers) or preflight_done
+        parent_dir = orchestrator.work_dir / "annotate_parent"
+        file_complete = (parent_dir / "seurat_clustered.rds").exists() and (parent_dir / "marker_genes").exists()
+        return bool(gptanno.get("cluster_parent_markers")) or bool(imported_markers) or file_complete
     if phase == "Annotate":
         annotate_parent = outputs.get("annotate_parent", {}) if isinstance(outputs.get("annotate_parent"), dict) else {}
         gptanno = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
@@ -1551,6 +1550,7 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
                     )
                     orchestrator.manifest.setdefault("outputs", {})["reviewed_parent"] = outputs
                     orchestrator._save_manifest()
+                    orchestrator.clear_report_outputs()
                     st.success("Reviewed parent annotations exported.")
                     _rerun_app()
                 except Exception as exc:
@@ -1697,11 +1697,13 @@ def _render_worker_guide(worker: str) -> None:
 
 
 def _render_worker_readiness(readiness: dict[str, Any]) -> None:
+    notes = [str(item) for item in readiness.get("notes", []) if str(item).strip()]
     if readiness.get("ok"):
         st.success("Ready to run.")
+        for note in notes:
+            st.caption(note)
         return
     st.warning("Blocked: this worker is missing prerequisite artifacts.")
-    notes = [str(item) for item in readiness.get("notes", []) if str(item).strip()]
     missing = [str(item) for item in readiness.get("missing", []) if str(item).strip()]
     if notes:
         for note in notes:
@@ -1767,6 +1769,7 @@ def _render_external_evidence_tab(config: dict[str, Any]) -> None:
                         pages=pages,
                         dpi=int(dpi),
                     )
+                orchestrator.clear_rag_dependent_outputs()
                 st.success(
                     "Extracted "
                     f"{result.get('evidence_count', 0)} literature evidence entrie(s): "
@@ -2128,7 +2131,7 @@ def main() -> None:
             st.success("Agent session reset.")
         if st.button("Refresh runtime state", use_container_width=True):
             st.session_state["ui_chat_history"] = _load_ui_history(config)
-            st.rerun()
+            _rerun_app()
 
     col_chat, col_side = st.columns([1.3, 1.0], gap="large")
 
@@ -2179,7 +2182,7 @@ def main() -> None:
             if st.button("Run worker", use_container_width=True, disabled=not bool(readiness.get("ok"))):
                 with st.spinner(f"Running worker: {worker}"):
                     _run_worker(config, orchestrator, worker, force=force, phase=phase)
-                st.rerun()
+                _rerun_app()
             history = _worker_history()
             if history:
                 for item in history[:6]:
@@ -2214,7 +2217,7 @@ def main() -> None:
     prompt = st.chat_input("Ask OntoAnno to run, review, explain, or show current state")
     if prompt:
         st.session_state["ui_pending_prompt"] = prompt
-        st.rerun()
+        _rerun_app()
 
     pending_prompt = st.session_state.get("ui_pending_prompt")
     if pending_prompt:
@@ -2222,17 +2225,17 @@ def main() -> None:
             str(pending_prompt),
         )
         st.session_state["ui_pending_prompt"] = None
-        st.rerun()
+        _rerun_app()
 
     active_job = _agent_job_state()
     if active_job and active_job.get("running"):
         _maybe_append_agent_decision_events(config, active_job)
         _maybe_append_agent_progress(config, orchestrator, active_job)
         time.sleep(1)
-        st.rerun()
+        _rerun_app()
     if active_job and not active_job.get("running"):
         _finalize_agent_job(config)
-        st.rerun()
+        _rerun_app()
 
 
 if __name__ == "__main__":

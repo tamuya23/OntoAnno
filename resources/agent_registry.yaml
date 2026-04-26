@@ -105,6 +105,27 @@ top_level_intents:
       - "updated review/relation/compare/controller artifacts under runs/<run_id>"
     status: "connected"
 
+  human_review:
+    user_facing: true
+    description: "Resume or start the manual review step for clusters that remain unresolved after automated RAG checking."
+    controller_action: "human_review"
+    parameters:
+      reason:
+        type: string
+        required: false
+    current_execution:
+      mode: manual_resolution_step
+      workers:
+        - decide_rag_check
+        - human_review
+      notes:
+        - "This intent should be selected when the previous RAG check suggested manual review and the user confirms with yes/proceed/continue."
+        - "It does not rebuild review packets by itself; it loads the current controller state and exposes unresolved clusters for user decisions."
+    outputs:
+      - "reviewed_parent/interactive_decisions.json"
+      - "reviewed_parent/interactive_decisions.csv"
+    status: "connected"
+
   run_subcluster_pipeline:
     user_facing: true
     description: "Run a targeted subcluster analysis for one parent cell type."

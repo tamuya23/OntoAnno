@@ -3,16 +3,12 @@ from __future__ import annotations
 import csv
 import json
 import os
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from .agent_memory import load_agent_memory, marker_memory_matches
+from .openai_client import OpenAIRequestError, chat_completions_url, post_openai_json
 from .utils import dump_json, ensure_dir, load_json, utc_now
-
-
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
 class LLMCompareError(RuntimeError):
@@ -27,15 +23,7 @@ def _append_log(log_path: Path, message: str) -> None:
 
 def _chat_completions_url(config: dict[str, Any]) -> str:
     llm_config = config["llm"]["annotation"]
-    base = (
-        llm_config.get("api_url")
-        or os.getenv("OPENAI_BASE_URL")
-        or DEFAULT_OPENAI_BASE_URL
-    )
-    base = str(base).rstrip("/")
-    if base.endswith("/chat/completions"):
-        return base
-    return f"{base}/chat/completions"
+    return chat_completions_url(llm_config.get("api_url"))
 
 
 def _default_system_prompt() -> str:
@@ -204,7 +192,7 @@ def _call_openai_chat(
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
     llm_config = config["llm"]["annotation"]
     model = llm_config["model"]
-    api_key = llm_config.get("api_key")
+    api_key = llm_config.get("api_key") or os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise LLMCompareError("Missing API key for llm.annotation")
     system_prompt = llm_config.get("system_prompt") or _default_system_prompt()
@@ -216,23 +204,15 @@ def _call_openai_chat(
             {"role": "user", "content": prompt},
         ],
     }
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise LLMCompareError(f"LLM API HTTP {exc.code}: {body}") from exc
-    except urllib.error.URLError as exc:
-        raise LLMCompareError(f"LLM API request failed: {exc.reason}") from exc
+        response_payload = post_openai_json(
+            url=url,
+            payload=payload,
+            api_key=str(api_key),
+            timeout=180,
+        )
+    except OpenAIRequestError as exc:
+        raise LLMCompareError(str(exc)) from exc
     content = _extract_message_content(response_payload)
     parsed = _extract_json_block(content)
     return content, parsed, response_payload

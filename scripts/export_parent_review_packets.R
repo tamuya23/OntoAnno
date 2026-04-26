@@ -54,6 +54,9 @@ read_cluster_counts <- function(spec_inputs, cluster_col) {
   }
 
   seurat_obj <- readRDS(parent_seurat_rds)
+  if (is.null(cluster_col) || !nzchar(cluster_col) || !cluster_col %in% colnames(seurat_obj@meta.data)) {
+    return(empty_counts)
+  }
   counts <- as.data.frame(table(as.character(seurat_obj@meta.data[[cluster_col]])), stringsAsFactors = FALSE)
   colnames(counts) <- c("cluster", "cell_count")
   counts

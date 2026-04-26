@@ -10,6 +10,7 @@ from typing import Any
 from jinja2 import Environment, select_autoescape
 from PIL import Image, ImageDraw, ImageFont
 
+from .review_packets import resolve_imported_parent_annotations
 from .utils import dump_json, ensure_dir, path_uri, utc_now
 
 
@@ -654,6 +655,7 @@ def _build_rag_review_payload(outputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_parent_annotation_outputs(config: dict[str, Any], outputs: dict[str, Any]) -> dict[str, Any]:
+    imported = resolve_imported_parent_annotations(config)
     parent_outputs = outputs.get("annotate_parent", {}) if isinstance(outputs.get("annotate_parent"), dict) else {}
     gptanno_tools = outputs.get("gptanno_tools", {}) if isinstance(outputs.get("gptanno_tools"), dict) else {}
     assign_parent_outputs = (
@@ -678,16 +680,21 @@ def _resolve_parent_annotation_outputs(config: dict[str, Any], outputs: dict[str
 
     resolved = {
         "parent_seurat_rds": existing_path(
+            imported.get("parent_seurat_rds") or "",
             parent_outputs.get("parent_seurat_rds") or "",
             assign_parent_outputs.get("parent_seurat_rds") or "",
             fallback_parent_seurat,
         ),
         "cluster_col": (
+            imported.get("cluster_col")
+            or
             parent_outputs.get("cluster_col")
             or assign_parent_outputs.get("cluster_col")
             or ""
         ),
         "best_resolution": (
+            imported.get("best_resolution")
+            or
             parent_outputs.get("best_resolution")
             or assign_parent_outputs.get("best_resolution")
             or ""
@@ -1026,7 +1033,8 @@ class _PDFDoc:
             return
         self._new_page()
         self.heading(title, level=1)
-        img = Image.open(image_path).convert("RGB")
+        with Image.open(image_path) as source:
+            img = source.convert("RGB")
         max_width = PDF_PAGE_WIDTH - (2 * PDF_MARGIN)
         max_height = PDF_PAGE_HEIGHT - self.y - PDF_MARGIN
         ratio = min(max_width / img.width, max_height / img.height)

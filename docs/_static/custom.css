@@ -1,0 +1,79 @@
+:root {
+  --ontoanno-ink: #172026;
+  --ontoanno-muted: #5b6770;
+  --ontoanno-border: #d8dee4;
+  --ontoanno-accent: #0f766e;
+  --ontoanno-accent-soft: #e7f5f2;
+  --ontoanno-panel: #f7f9fb;
+}
+
+body {
+  color: var(--ontoanno-ink);
+}
+
+a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.hero-image {
+  border: 1px solid var(--ontoanno-border);
+  border-radius: 8px;
+  margin: 1rem 0 1.6rem;
+  max-width: 100%;
+}
+
+.summary-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  margin: 1.2rem 0 2rem;
+}
+
+.summary-card {
+  background: #ffffff;
+  border: 1px solid var(--ontoanno-border);
+  border-radius: 8px;
+  color: var(--ontoanno-ink);
+  display: block;
+  padding: 1rem;
+  text-decoration: none;
+}
+
+.summary-card:hover {
+  border-color: var(--ontoanno-accent);
+  box-shadow: 0 8px 22px rgb(15 118 110 / 12%);
+  text-decoration: none;
+}
+
+.summary-title {
+  color: var(--ontoanno-accent);
+  display: block;
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 0.35rem;
+}
+
+.summary-text {
+  color: var(--ontoanno-muted);
+  display: block;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.wy-table-responsive table td,
+.wy-table-responsive table th,
+table.docutils td,
+table.docutils th {
+  white-space: normal;
+}
+
+code,
+tt,
+.rst-content code.literal {
+  border-radius: 4px;
+}
+
+pre {
+  border-radius: 6px;
+}

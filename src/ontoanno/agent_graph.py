@@ -56,6 +56,10 @@ def _intent_chain(registry: dict[str, Any], intent_name: str) -> list[str]:
         chain.extend(str(item) for item in execution.get("logical_pipeline", []))
         return chain
 
+    workers = execution.get("workers")
+    if isinstance(workers, list) and workers:
+        return [str(item) for item in workers]
+
     if intent_name == "run_RAG_check":
         return [str(item) for item in execution.get("logical_workers", [])]
 
@@ -72,6 +76,9 @@ def _intent_chain(registry: dict[str, Any], intent_name: str) -> list[str]:
             "write_knowledge_memory",
             "retrieve_rag_evidence_later",
         ]
+
+    if intent_name == "extract_external_evidence":
+        return ["extract_external_evidence_placeholder"]
 
     return []
 

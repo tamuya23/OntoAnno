@@ -180,6 +180,7 @@ def save_agent_memory(config: dict[str, Any], payload: dict[str, Any]) -> Path:
     path = memory_path(config)
     ensure_dir(path.parent)
     payload = dict(payload)
+    compact_custom_marker_memory(payload)
     payload["project_name"] = config["project"]["name"]
     payload["updated_at"] = utc_now()
     dump_json(path, payload)
