@@ -47,16 +47,15 @@ for (col_name in names(decision_df)) {
 label_map <- setNames(decision_df$final_label, decision_df$cluster_id)
 
 reviewed_labels <- unname(label_map[cluster_ids])
-fallback_labels <- if ("celltype_parent" %in% colnames(meta)) {
-  as.character(meta$celltype_parent)
-} else {
-  rep(NA_character_, nrow(meta))
+missing_review_clusters <- sort(unique(cluster_ids[is.na(reviewed_labels) | reviewed_labels == ""]))
+if (length(missing_review_clusters) > 0) {
+  stop(
+    "Reviewed decisions are missing final labels for cluster(s): ",
+    paste(missing_review_clusters, collapse = ", "),
+    ". Export is blocked rather than silently copying existing parent labels."
+  )
 }
-meta$celltype_parent_reviewed <- ifelse(
-  is.na(reviewed_labels) | reviewed_labels == "",
-  fallback_labels,
-  reviewed_labels
-)
+meta$celltype_parent_reviewed <- reviewed_labels
 seurat_obj@meta.data <- meta
 
 cluster_decision_cols <- intersect(

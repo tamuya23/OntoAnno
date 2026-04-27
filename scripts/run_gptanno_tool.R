@@ -186,7 +186,10 @@ recreate_seurat_if_needed <- function(seurat_obj) {
     }
   )
   if (is.null(counts)) {
-    return(seurat_obj)
+    stop(
+      "annotation.preprocess is true, but the input Seurat object has no readable counts layer/slot. ",
+      "Provide raw counts or set annotation.preprocess: false for an already processed object."
+    )
   }
 
   metadata <- seurat_obj@meta.data

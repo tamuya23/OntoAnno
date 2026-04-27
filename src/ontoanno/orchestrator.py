@@ -253,6 +253,129 @@ class Orchestrator:
         )
         self.clear_report_outputs()
 
+    def clear_gptanno_tool_outputs_for_rerun(self, tool: str) -> None:
+        parent_dir = self.work_dir / "annotate_parent"
+        subcluster_dir = self.work_dir / "annotate_subclusters"
+        parent_paths = {
+            "preprocessed": parent_dir / "seurat_preprocessed.rds",
+            "clustered": parent_dir / "seurat_clustered.rds",
+            "markers": parent_dir / "marker_genes",
+            "prediction": parent_dir / "prediction",
+            "annotation": parent_dir / "annotation_parent.rds",
+            "scores": parent_dir / "annotation_summary_scores.csv",
+            "ontology_rds": parent_dir / "parent_ontology_mapping.rds",
+            "ontology_csv": parent_dir / "parent_ontology_mapping.csv",
+            "best_resolution": parent_dir / "best_parent_resolution.json",
+            "assigned": parent_dir / "seurat_parent_annotated.rds",
+        }
+        subcluster_paths = {
+            "root": subcluster_dir,
+            "ontology_workflow": subcluster_dir / "ontology_workflow.rds",
+            "ontology_seurat": subcluster_dir / "seurat_ontology_annotated.rds",
+            "inheritance_workflow": subcluster_dir / "marker_inheritance_workflow.rds",
+            "final_seurat": subcluster_dir / "seurat_final_annotated.rds",
+            "final_metadata": subcluster_dir / "metadata_final.csv",
+            "final_dimplot": subcluster_dir / "DimPlot_celltype_final.pdf",
+        }
+        plans: dict[str, tuple[tuple[str, ...], tuple[Path, ...]]] = {
+            "preprocess_parent": (
+                (
+                    "preprocess_parent",
+                    "cluster_parent_markers",
+                    "annotate_parent_raw",
+                    "map_parent_ontology",
+                    "select_parent_resolution",
+                    "assign_parent_labels",
+                    "annotate_parent",
+                ),
+                tuple(parent_paths.values()),
+            ),
+            "cluster_parent_markers": (
+                (
+                    "cluster_parent_markers",
+                    "annotate_parent_raw",
+                    "map_parent_ontology",
+                    "select_parent_resolution",
+                    "assign_parent_labels",
+                    "annotate_parent",
+                ),
+                tuple(parent_paths[key] for key in parent_paths if key != "preprocessed"),
+            ),
+            "annotate_parent_raw": (
+                (
+                    "annotate_parent_raw",
+                    "map_parent_ontology",
+                    "select_parent_resolution",
+                    "assign_parent_labels",
+                    "annotate_parent",
+                ),
+                tuple(
+                    parent_paths[key]
+                    for key in (
+                        "prediction",
+                        "annotation",
+                        "scores",
+                        "ontology_rds",
+                        "ontology_csv",
+                        "best_resolution",
+                        "assigned",
+                    )
+                ),
+            ),
+            "map_parent_ontology": (
+                ("map_parent_ontology",),
+                (parent_paths["ontology_rds"], parent_paths["ontology_csv"]),
+            ),
+            "select_parent_resolution": (
+                ("select_parent_resolution", "assign_parent_labels", "annotate_parent"),
+                (parent_paths["scores"], parent_paths["best_resolution"], parent_paths["assigned"]),
+            ),
+            "assign_parent_labels": (
+                ("assign_parent_labels", "annotate_parent"),
+                (parent_paths["assigned"],),
+            ),
+            "subcluster_find_markers": (
+                (
+                    "subcluster_find_markers",
+                    "subcluster_annotate_ontology",
+                    "subcluster_annotate_inheritance",
+                    "finalize_subcluster_annotations",
+                    "annotate_subclusters",
+                ),
+                (subcluster_paths["root"],),
+            ),
+            "subcluster_annotate_ontology": (
+                ("subcluster_annotate_ontology", "finalize_subcluster_annotations", "annotate_subclusters"),
+                (
+                    subcluster_paths["ontology_workflow"],
+                    subcluster_paths["ontology_seurat"],
+                    subcluster_paths["final_seurat"],
+                    subcluster_paths["final_metadata"],
+                    subcluster_paths["final_dimplot"],
+                ),
+            ),
+            "subcluster_annotate_inheritance": (
+                ("subcluster_annotate_inheritance", "finalize_subcluster_annotations", "annotate_subclusters"),
+                (
+                    subcluster_paths["inheritance_workflow"],
+                    subcluster_paths["final_seurat"],
+                    subcluster_paths["final_metadata"],
+                    subcluster_paths["final_dimplot"],
+                ),
+            ),
+            "finalize_subcluster_annotations": (
+                ("finalize_subcluster_annotations", "annotate_subclusters"),
+                (
+                    subcluster_paths["final_seurat"],
+                    subcluster_paths["final_metadata"],
+                    subcluster_paths["final_dimplot"],
+                ),
+            ),
+        }
+        plan = plans.get(tool)
+        if plan is not None:
+            self._remove_recorded_outputs(*plan)
+
     def clear_after_parent_tool_outputs(self, tool: str) -> None:
         parent_dir = self.work_dir / "annotate_parent"
         prediction_dir = parent_dir / "prediction"
@@ -538,6 +661,8 @@ class Orchestrator:
         }
 
     def _stage_annotate_parent(self, force: bool) -> dict[str, Any]:
+        if force:
+            self.clear_gptanno_tool_outputs_for_rerun("preprocess_parent")
         spec_path, outputs_json = self._annotation_stage_spec("annotate_parent")
         spec = self._base_annotation_spec(stage="annotate_parent", outputs_json=outputs_json)
         dump_json(spec_path, spec)
@@ -552,9 +677,10 @@ class Orchestrator:
         return outputs
 
     def _stage_annotate_subclusters(self, force: bool) -> dict[str, Any]:
-        del force
         if self.state["stages"]["annotate_parent"].get("status") != "completed":
             raise StageError("annotate_parent must complete before annotate_subclusters")
+        if force:
+            self.clear_gptanno_tool_outputs_for_rerun("subcluster_find_markers")
         spec_path, outputs_json = self._annotation_stage_spec("annotate_subclusters")
         spec = self._base_annotation_spec(stage="annotate_subclusters", outputs_json=outputs_json)
         dump_json(spec_path, spec)
@@ -828,6 +954,8 @@ class Orchestrator:
                 self._emit(f"GPTAnno tool '{tool}' already completed; reusing recorded outputs.")
                 return cached_outputs
             self._emit(f"GPTAnno tool '{tool}' recorded outputs are stale; rerunning.")
+        if force:
+            self.clear_gptanno_tool_outputs_for_rerun(tool)
         outputs = self._run_gptanno_tool(tool)
         gptanno_outputs[tool] = outputs
         self._save_manifest()

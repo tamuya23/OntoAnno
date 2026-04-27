@@ -22,7 +22,7 @@ if importlib.util.find_spec("sphinx_copybutton") is not None:
 
 autosectionlabel_prefix_document = True
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "_includes", "Thumbs.db", ".DS_Store"]
 source_suffix = ".rst"
 master_doc = "index"
 
@@ -32,6 +32,9 @@ html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 html_favicon = None
 html_show_sourcelink = False
+html_sidebars = {
+    "**": [],
+}
 
 if importlib.util.find_spec("pydata_sphinx_theme") is not None:
     html_theme = "pydata_sphinx_theme"

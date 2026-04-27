@@ -103,7 +103,9 @@ def _infer_parent_seurat_path(annotation_parent_path: Path, config: dict[str, An
         path for path in sibling_candidates
         if path.name != annotation_parent_path.name and path.stat().st_size > annotation_parent_path.stat().st_size
     ]
-    return _existing_path(*sibling_candidates, inputs.get("seurat_rds"))
+    # Do not fall back to inputs.seurat_rds here: that is the raw input object,
+    # not an annotated parent object suitable for reviewed-label export.
+    return _existing_path(*sibling_candidates)
 
 
 def _infer_parent_metadata_path(annotation_parent_path: Path) -> str | None:

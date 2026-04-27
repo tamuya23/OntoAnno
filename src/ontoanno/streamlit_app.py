@@ -2093,7 +2093,7 @@ def _run_worker(config: dict[str, Any], orchestrator: Orchestrator, worker: str,
 
 
 def main() -> None:
-    st.set_page_config(page_title="OntoAnno Workbench", layout="wide")
+    st.set_page_config(page_title="OntoAnno", layout="wide")
     config, orchestrator = _refresh_runtime()
     if _default_reset_session() and not st.session_state.get("_ontoanno_ui_session_reset_done"):
         reset_agent_session(config)
@@ -2108,7 +2108,7 @@ def main() -> None:
 
     state = _project_state(config, orchestrator)
 
-    st.title("OntoAnno Workbench")
+    st.title("OntoAnno")
     st.caption("Local Streamlit front-end for OntoAnno. Python orchestrates; R workers still run locally through Rscript.")
 
     with st.sidebar:
@@ -2129,7 +2129,11 @@ def main() -> None:
             st.session_state["ui_chat_history"] = []
             _save_ui_history(config, [])
             st.success("Agent session reset.")
-        if st.button("Refresh runtime state", use_container_width=True):
+        if st.button(
+            "Reload saved session",
+            help="Reload the saved chat/session files from disk if the page looks stale.",
+            use_container_width=True,
+        ):
             st.session_state["ui_chat_history"] = _load_ui_history(config)
             _rerun_app()
 

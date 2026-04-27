@@ -314,6 +314,9 @@ def _resolve_report_outputs(config: dict[str, Any], manifest: dict[str, Any], ru
         disk_outputs = _load_stage_outputs_from_run_dir(run_dir, stage)
         if isinstance(disk_outputs, dict) and disk_outputs:
             resolved[stage] = disk_outputs
+            resolved.setdefault("_recovery_warnings", []).append(
+                f"{stage}: report recovered outputs from run_dir because manifest had no recorded outputs."
+            )
 
     gptanno_tools = resolved.get("gptanno_tools", {}) if isinstance(resolved.get("gptanno_tools"), dict) else {}
     if not gptanno_tools:
@@ -375,6 +378,9 @@ def _resolve_report_outputs(config: dict[str, Any], manifest: dict[str, Any], ru
             )
         if recovered_tools:
             resolved["gptanno_tools"] = recovered_tools
+            resolved.setdefault("_recovery_warnings", []).append(
+                "gptanno_tools: report recovered GPTAnno outputs from project work_dir because manifest had no recorded GPTAnno tool outputs."
+            )
 
     return resolved
 
@@ -860,6 +866,8 @@ def _resolve_subcluster_outputs(config: dict[str, Any], outputs: dict[str, Any])
         resolved.setdefault("subclustering_performed", True)
     else:
         resolved.setdefault("subclustering_performed", final_seurat.exists())
+    if not explicit:
+        resolved["_recovered_from_work_dir"] = True
     return resolved
 
 
@@ -867,6 +875,7 @@ def _build_report_context(config: dict[str, Any], state: dict[str, Any], manifes
     outputs = _resolve_report_outputs(config, manifest, report_path.parent)
     warnings: list[str] = []
     errors: list[str] = []
+    warnings.extend(str(item) for item in outputs.get("_recovery_warnings", []) if str(item).strip())
 
     for stage_name, stage_state in state.get("stages", {}).items():
         if stage_state.get("status") == "skipped" and stage_state.get("message"):
@@ -881,6 +890,10 @@ def _build_report_context(config: dict[str, Any], state: dict[str, Any], manifes
     clusters, cluster_summary = _build_cluster_payload(outputs)
     rag_review = _build_rag_review_payload(outputs)
     subcluster_outputs = _resolve_subcluster_outputs(config, outputs)
+    if subcluster_outputs.get("_recovered_from_work_dir"):
+        warnings.append(
+            "subcluster: report recovered subcluster outputs from project work_dir because manifest had no recorded subcluster outputs."
+        )
     subcluster = _build_subcluster_payload(config, outputs)
     parent_outputs = _resolve_parent_annotation_outputs(config, outputs)
 

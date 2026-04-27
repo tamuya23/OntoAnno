@@ -1,6 +1,0 @@
-{
-  "dependencies": ["."],
-  "graphs": {
-    "ontoanno_architecture": "./src/ontoanno/agent_graph_visual.py:graph"
-  }
-}

@@ -1,329 +1,111 @@
 # OntoAnno
 
-> Ontology-aware single-cell annotation workbench with chat-based control, RAG review, and report generation.
+Ontology-aware single-cell annotation with an agent-guided web interface.
 
-OntoAnno is a local web app for running and reviewing single-cell annotation workflows. It is designed for researchers who want to work through an interface, not through a long list of commands.
+OntoAnno helps researchers annotate Seurat single-cell datasets, review labels
+with marker and ontology evidence, inspect subclusters, and generate a final
+HTML report. The main interface is a local Streamlit app: users interact with
+the agent in natural language while Python coordinates R/GPTAnno workers in the
+background.
 
-![OntoAnno Interface Overview](figures/ontoanno_interface_overview.png)
-
-## Container Quick Start
-
-OntoAnno supports two container runtimes:
-
-- `Docker`: recommended for laptops, workstations, and regular Linux servers
-- `Apptainer`: recommended for HPC environments such as Longleaf
-
-Both runtimes are meant to use the same container image.
-
-## Docker Quick Start
-
-If you want a containerized setup with both Python and R bundled together:
-
-### Step 1: Prepare the Docker workspace
-
-```bash
-bash docker_setup.sh
-```
-
-This will:
-
-- create `.env` if it does not exist
-- create `data/`, `work/`, and `runs/`
-- prepare the folder layout for Docker
-
-### Step 2: Edit `.env`
-
-Set at least:
-
-- `OPENAI_API_KEY`
-- `ONTOANNO_CONFIG`
-
-### Step 3: Put your data in `./data`
-
-- host folder `./data` is mounted inside the container as `/data`
-- host folder `./work` is mounted inside the container as `/work`
-
-### Step 4: Choose a config template
-
-- [`docker_import_template.yaml`](/proj/bzou_lab/projects/OntoAnno/configs/docker_import_template.yaml): start from an existing annotation output folder
-- [`docker_fresh_template.yaml`](/proj/bzou_lab/projects/OntoAnno/configs/docker_fresh_template.yaml): start from a raw Seurat object
-
-Inside Docker, your config must use container paths such as:
-
-- `/data/...`
-- `/work/...`
-
-### Step 5: Start OntoAnno
-
-```bash
-./start_ontoanno_docker.sh
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8501
-```
-
-Important:
-
-- the container already includes its own Python and R environments
-- the first Docker build may take a while because it installs R packages
-
-## Apptainer Quick Start
-
-If your system uses `apptainer` instead of `docker`:
-
-### Step 1: Prepare the Apptainer workspace
-
-```bash
-bash apptainer_setup.sh
-```
-
-This will:
-
-- create `.env` if it does not exist
-- create `data/`, `work/`, `runs/`, and `.apptainer/`
-- prepare the folder layout for Apptainer
-
-### Step 2: Edit `.env`
-
-Set at least:
-
-- `OPENAI_API_KEY`
-- `ONTOANNO_CONFIG`
-- `ONTOANNO_IMAGE`
-
-`ONTOANNO_IMAGE` should point to a published Docker image, for example:
-
-```text
-docker://ghcr.io/tamuya23/ontoanno:latest
-```
-
-### Step 3: Put your data in `./data`
-
-- host folder `./data` is mounted inside the container as `/data`
-- host folder `./work` is mounted inside the container as `/work`
-
-### Step 4: Start OntoAnno
-
-```bash
-./start_ontoanno_apptainer.sh
-```
-
-The first run will pull the image into `.apptainer/ontoanno_latest.sif`.
-
-Then open:
-
-```text
-http://127.0.0.1:8501
-```
-
-Important:
-
-- paths inside the container must use `/data/...` and `/work/...`
-- Apptainer is the better option for HPC systems that do not allow Docker
-- the image only needs to be pulled once unless you want to refresh it
-
-## Publish the Container Image
-
-If you push this repository to GitHub, the container image can be built automatically by GitHub Actions.
-
-The workflow file is:
-
-- [.github/workflows/build-container.yml](/proj/bzou_lab/projects/OntoAnno/.github/workflows/build-container.yml)
-
-By default, it publishes to:
-
-```text
-ghcr.io/tamuya23/ontoanno:latest
-```
-
-How it works:
-
-1. Push to the `main` branch, or manually trigger the workflow in GitHub Actions.
-2. GitHub builds the Docker image.
-3. GitHub publishes the image to GitHub Container Registry.
-4. Docker users can pull the image directly.
-5. Apptainer users can pull the same image as a `.sif`.
+![OntoAnno interface overview](figures/OntoAnno.png)
 
 ## Quick Start
 
-### Step 1: Open the project folder
+Clone the repository:
 
 ```bash
-cd /proj/bzou_lab/projects/OntoAnno
+git clone https://github.com/tamuya23/OntoAnno.git
+cd OntoAnno
 ```
 
-### Step 2: Run the one-time setup
+Use Docker on a laptop, workstation, or regular Linux server:
 
 ```bash
-bash setup.sh
+bash docker_setup.sh
+# edit .env and set OPENAI_API_KEY
+# put your Seurat .rds file under data/
+# edit configs/demo.yaml for your dataset
+./start_ontoanno_docker.sh configs/demo.yaml
 ```
 
-This will:
-
-- install OntoAnno
-- install the web interface
-- automatically detect your `Rscript` path and let you confirm or edit it
-- ask for your OpenAI API key
-- save these settings for later
-
-### Step 3: Launch the app
+Use Apptainer on HPC systems where Docker is not available:
 
 ```bash
-./start_ontoanno.sh
+bash apptainer_setup.sh
+# edit .env and set OPENAI_API_KEY
+# put your Seurat .rds file under data/
+# edit configs/demo.yaml for your dataset
+./start_ontoanno_apptainer.sh configs/demo.yaml
 ```
 
-The terminal will print a local web link, usually:
+Then open the URL printed in the terminal, usually:
 
 ```text
 http://127.0.0.1:8501
 ```
 
-If you use VS Code with SSH, it will usually offer the forwarded link automatically.
+If you are using SSH or HPC, forward port `8501` through VS Code or your SSH
+client.
 
-## Start a Specific Dataset
+## Configure Your Dataset
 
-To open a different dataset config:
+Start from `configs/demo.yaml`. For a first run, the key fields are:
 
-```bash
-./start_ontoanno.sh configs/chamber_demo.yaml
+```yaml
+project:
+  name: MyProject
+  work_dir: /work/MyProject
+
+inputs:
+  seurat_rds: /data/my_project/my_dataset.rds
+
+annotation:
+  species: human
+  tissue_name: human pancreatic tumor
+  parent_res:
+    - 0.1
+    - 0.3
+  preprocess: true
 ```
 
-Example config files are in [`configs/`](/proj/bzou_lab/projects/OntoAnno/configs).
+Put data files under `data/`, then use container paths such as `/data/...` in
+the YAML file.
 
-## What You Can Do in OntoAnno
+## What OntoAnno Does
 
-Use the app to:
+- Runs parent clustering and cell-type annotation.
+- Selects and tracks parent annotation resolution.
+- Supports granularity changes without changing cluster structure.
+- Runs subcluster analysis for selected parent cell types.
+- Stores user-provided and literature-provided marker evidence.
+- Runs RAG-based review against ontology and marker references.
+- Supports human review for unresolved clusters.
+- Generates a final report with tables, figures, and review summaries.
 
-- run parent annotation
-- inspect labels and prediction plots
-- run RAG-based review
-- change resolution or granularity
-- subcluster a cell population
-- add user-provided or literature-provided evidence
-- generate a final report
+## Documentation
 
-## How to Use the Interface
+The main user documentation is in `docs/`:
 
-### 1. Project Summary
+- [Quick Start](docs/quick_start.rst)
+- [Data Configure](docs/data_configure.rst)
+- [Agent Guide](docs/agent_guide.rst)
+- [Example Run](docs/example_run.rst)
 
-The left sidebar shows the current project state:
-
-- project name
-- run ID
-- tested parent resolutions
-- selected resolution
-- granularity
-- ontology restriction status
-- evidence memory counts
-
-Use this panel to confirm that you are looking at the correct dataset and settings.
-
-### 2. Session Controls
-
-The sidebar buttons help manage the session:
-
-- `Reset agent session`: clear the current conversation state
-- `Refresh runtime state`: reload saved outputs and runtime status
-
-Use `Refresh runtime state` when the page looks stale. Use `Reset agent session` only when you want to start over.
-
-### 3. Agent Chat
-
-The center panel is the main workspace.
-
-Type normal instructions such as:
-
-- `Run the parent annotation`
-- `What is the current selected resolution?`
-- `Run the RAG-based check`
-- `Look deeper into macrophages`
-- `Add these markers to pericyte: RGS5, CSPG4, MCAM`
-- `Generate the final report`
-
-You do not need to remember worker names or internal commands.
-
-### 4. Status and Output
-
-The right panel helps you monitor the workflow:
-
-- `Status` shows the main pipeline stages
-- `Terminal Output` shows live output from the currently running worker
-- `Artifacts` shows plots, tables, reviewed outputs, and reports
-
-Use this panel whenever a job is running or when you need to inspect results.
-
-### 5. Evidence and Logs
-
-Additional tabs provide:
-
-- `External Evidence`: user and literature evidence
-- `Workers`: advanced manual worker execution
-- `Logs`: saved runtime logs
-
-Most users will mainly use `Status`, `Artifacts`, and `External Evidence`.
-
-## Typical Workflow
-
-For most projects, the workflow is:
-
-1. Run the parent annotation.
-2. Review labels and plots.
-3. Run the RAG check.
-4. Adjust resolution or granularity if needed.
-5. Subcluster a population if needed.
-6. Add evidence if needed.
-7. Generate the final report.
-
-## Requirements
-
-Before using OntoAnno, you need:
-
-- a working Python environment
-- a working R installation with the GPTAnno-related packages
-- an OpenAI API key
-- a YAML config file for your dataset
-
-If you use Docker instead, the Python and R environments are provided inside the container.
-
-## Troubleshooting
-
-### The app does not start
-
-Run setup again:
+To build the HTML documentation locally:
 
 ```bash
-bash setup.sh
+python3 -m pip install -r docs/requirements.txt
+python3 -m sphinx -E -b html docs docs/_build/html
 ```
 
-### R jobs fail
+Open `docs/_build/html/index.html` after the build finishes.
 
-The `Rscript` path is usually wrong, or required R packages are missing. Run `bash setup.sh` again and confirm the R path.
+## Acknowledgement
 
-### OpenAI calls fail
+OntoAnno builds on the GPTAnno annotation workflow. For the original GPTAnno
+repository, see [GPTAnno](https://github.com/yrsong001/GPTAnno).
 
-The API key is usually missing or invalid. Run `bash setup.sh` again and enter the key again.
+## License
 
-### The page opens but the project does not work
-
-The YAML config usually points to missing files. Check the dataset paths in your config file.
-
-## Useful Files
-
-- [Dockerfile](/proj/bzou_lab/projects/OntoAnno/Dockerfile): container image definition
-- [compose.yaml](/proj/bzou_lab/projects/OntoAnno/compose.yaml): Docker Compose launcher
-- [.env.example](/proj/bzou_lab/projects/OntoAnno/.env.example): example container environment file
-- [docker_setup.sh](/proj/bzou_lab/projects/OntoAnno/docker_setup.sh): prepares the Docker workspace
-- [start_ontoanno_docker.sh](/proj/bzou_lab/projects/OntoAnno/start_ontoanno_docker.sh): starts the Docker version
-- [apptainer_setup.sh](/proj/bzou_lab/projects/OntoAnno/apptainer_setup.sh): prepares the Apptainer workspace
-- [start_ontoanno_apptainer.sh](/proj/bzou_lab/projects/OntoAnno/start_ontoanno_apptainer.sh): starts the Apptainer version
-- [setup.sh](/proj/bzou_lab/projects/OntoAnno/setup.sh): one-time installer
-- [start_ontoanno.sh](/proj/bzou_lab/projects/OntoAnno/start_ontoanno.sh): app launcher
-- [chamber_demo.yaml](/proj/bzou_lab/projects/OntoAnno/configs/chamber_demo.yaml): example dataset config
-- [`configs/`](/proj/bzou_lab/projects/OntoAnno/configs): more example configs
-
-## In One Line
-
-Run `bash setup.sh` once, then launch OntoAnno with `./start_ontoanno.sh`.
+License information will be added before release.

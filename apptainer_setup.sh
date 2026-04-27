@@ -20,7 +20,8 @@ else
 fi
 
 printf '\nNext step:\n'
-printf '1. Edit %s and set OPENAI_API_KEY, ONTOANNO_CONFIG, and ONTOANNO_IMAGE\n' "${ENV_FILE}"
+printf '1. Edit %s and set OPENAI_API_KEY and ONTOANNO_IMAGE\n' "${ENV_FILE}"
+printf '   ONTOANNO_CONFIG is optional; you can pass the config when launching.\n'
+printf '   Example: ./start_ontoanno_apptainer.sh configs/my_project.yaml\n'
 printf '2. Put your input files under %s/data\n' "${ROOT_DIR}"
 printf '3. Start OntoAnno with: ./start_ontoanno_apptainer.sh\n'
-
