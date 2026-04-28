@@ -50,7 +50,9 @@ client.
 
 ## Configure Your Dataset
 
-Start from `configs/demo.yaml`. For a first run, the key fields are:
+Start from `configs/demo.yaml` for a normal first run. Use
+`configs/demo_optional.yaml` only when you need optional inputs such as
+reference labels, PDF evidence, or precomputed marker genes. The key fields are:
 
 ```yaml
 project:

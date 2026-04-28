@@ -70,6 +70,28 @@ def _resolve_rscript() -> str:
     return "Rscript"
 
 
+def _annotation_output_payload_dir(path: Path) -> Path:
+    return path / "output" if (path / "output").is_dir() else path
+
+
+def _has_annotation_parent_rds(path: Path) -> bool:
+    candidates = [
+        path / "annotation_parent_nonCM.rds",
+        path / "annotation_parent.rds",
+        *path.glob("annotation_parent*.rds"),
+    ]
+    return any(candidate.exists() for candidate in candidates)
+
+
+def _has_annotation_scores_csv(path: Path) -> bool:
+    candidates = [
+        path / "annotation_summary_scores_nonCM.csv",
+        path / "annotation_summary_scores.csv",
+        *path.glob("annotation_summary_scores*.csv"),
+    ]
+    return any(candidate.exists() for candidate in candidates)
+
+
 def load_config(config_path: str | Path, repo_root: Path) -> dict[str, Any]:
     path = Path(config_path).expanduser().resolve()
     if not path.exists():
@@ -113,7 +135,14 @@ def load_config(config_path: str | Path, repo_root: Path) -> dict[str, Any]:
     if not inputs.get("seurat_rds") and not has_imported_parent:
         _require(config, "inputs.seurat_rds")
     inputs["seurat_rds"] = _resolve_path(inputs.get("seurat_rds"), base_dir=base_dir)
-    inputs["manual_labels_csv"] = _resolve_path(inputs.get("manual_labels_csv"), base_dir=base_dir)
+    reference_labels_csv = _resolve_path(inputs.get("reference_labels_csv"), base_dir=base_dir)
+    manual_labels_csv = _resolve_path(inputs.get("manual_labels_csv"), base_dir=base_dir)
+    if reference_labels_csv and not manual_labels_csv:
+        manual_labels_csv = reference_labels_csv
+    if manual_labels_csv and not reference_labels_csv:
+        reference_labels_csv = manual_labels_csv
+    inputs["reference_labels_csv"] = reference_labels_csv
+    inputs["manual_labels_csv"] = manual_labels_csv
     inputs["pdf_dir"] = _resolve_path(inputs.get("pdf_dir"), base_dir=base_dir)
     inputs["marker_genes_dir"] = _resolve_path(inputs.get("marker_genes_dir"), base_dir=base_dir)
     inputs["annotation_output_dir"] = _resolve_path(inputs.get("annotation_output_dir"), base_dir=base_dir)
@@ -244,6 +273,28 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
         annotation_output_dir = config["inputs"].get("annotation_output_dir")
         if annotation_output_dir and not Path(annotation_output_dir).is_dir():
             errors.append(f"Imported annotation output directory not found: inputs.annotation_output_dir={annotation_output_dir}")
+        elif annotation_output_dir:
+            output_dir = _annotation_output_payload_dir(Path(annotation_output_dir))
+            if not _has_annotation_parent_rds(output_dir):
+                errors.append(
+                    "Imported annotation output directory must contain annotation_parent_nonCM.rds, "
+                    "annotation_parent.rds, or annotation_parent*.rds: "
+                    f"inputs.annotation_output_dir={annotation_output_dir}"
+                )
+            if not (output_dir / "marker_genes").is_dir():
+                errors.append(
+                    "Imported annotation output directory must contain marker_genes/ with "
+                    f"markers_res_<resolution>.rds files: inputs.annotation_output_dir={annotation_output_dir}"
+                )
+            if not _has_annotation_scores_csv(output_dir) and not config["inputs"].get("best_resolution"):
+                warnings.append(
+                    "Imported annotation output directory has no annotation_summary_scores*.csv; "
+                    "set inputs.best_resolution if OntoAnno cannot infer the selected parent resolution."
+                )
+            if not (output_dir / "prediction").is_dir():
+                warnings.append(
+                    "Imported annotation output directory has no prediction/ folder; parent prediction figures may be unavailable."
+                )
         for key in ("annotation_parent_rds", "annotation_scores_csv", "parent_seurat_rds", "parent_metadata_csv"):
             value = config["inputs"].get(key)
             if value and not Path(value).exists():
@@ -265,9 +316,9 @@ def validate_config(config: dict[str, Any], stages: list[str] | None = None) -> 
                 if value and not Path(value).is_dir():
                     errors.append(f"bootstrap_parent directory not found: {key}={value}")
 
-    manual_labels_csv = config["inputs"].get("manual_labels_csv")
-    if needs_evaluation and manual_labels_csv and not Path(manual_labels_csv).exists():
-        errors.append(f"Manual labels file not found: {manual_labels_csv}")
+    reference_labels_csv = config["inputs"].get("reference_labels_csv") or config["inputs"].get("manual_labels_csv")
+    if needs_evaluation and reference_labels_csv and not Path(reference_labels_csv).exists():
+        errors.append(f"Reference labels file not found: {reference_labels_csv}")
 
     pdf_override_files = config.get("_runtime", {}).get("pdf_override_files", [])
     pdf_override_dir = config.get("_runtime", {}).get("pdf_override_dir")

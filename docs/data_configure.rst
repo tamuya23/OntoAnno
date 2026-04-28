@@ -2,8 +2,11 @@ Data Configure
 ==============
 
 Before starting OntoAnno, open ``configs/demo.yaml`` and fill in the fields for
-your dataset. Do not delete the other sections in the file; OntoAnno still uses
-them as default settings.
+your dataset. This is the minimum template for a normal first run.
+
+If you want optional features such as reference-label comparison, PDF evidence,
+or precomputed marker genes, use ``configs/demo_optional.yaml`` as the example
+template.
 
 Required Fields
 ---------------
@@ -58,10 +61,10 @@ For a first run, you usually only need to edit these fields:
      - ``true``
 
 Optional Fields
-----------------
+---------------
 
-These fields can remain unchanged for a first run. Change them only when you
-want to use the specific feature or intentionally change pipeline behavior.
+These fields are shown in ``configs/demo_optional.yaml``. Change them only when
+you want to use the specific feature or intentionally change pipeline behavior.
 
 .. list-table::
    :header-rows: 1
@@ -70,18 +73,15 @@ want to use the specific feature or intentionally change pipeline behavior.
    * - Field
      - What it controls
      - Example / options
-   * - ``inputs.manual_labels_csv``
-     - Optional labels from another method, used only for comparison.
+   * - ``inputs.reference_labels_csv``
+     - Optional labels from another method, used only for evaluation/comparison.
      - ``/data/project/labels.csv`` or ``null``
    * - ``inputs.pdf_dir``
      - Folder of literature PDFs for external marker evidence extraction.
      - ``/data/project/pdfs`` or ``null``
    * - ``inputs.marker_genes_dir``
-     - Existing marker gene files if you want to skip marker detection.
+     - Existing cluster marker files if you want to skip marker detection and start from annotation. The folder should contain files such as ``markers_res_0.1.rds`` for each parent resolution.
      - ``/data/project/marker_genes`` or ``null``
-   * - ``inputs.annotation_parent_rds``
-     - Existing parent annotation object if you only want downstream review.
-     - ``/data/project/annotation_parent.rds`` or ``null``
    * - ``annotation.sub_res``
      - Resolutions used when subclustering one parent cell type.
      - ``0.1``, ``0.2``

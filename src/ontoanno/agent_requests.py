@@ -17,6 +17,7 @@ from .worker_runtime import (
     SUBCLUSTER_WORKERS,
     clear_parent_dependent_outputs,
     clear_rag_dependent_outputs,
+    ensure_parent_annotation_outputs,
     has_parent_annotation_outputs,
     run_generate_report_worker,
     run_gptanno_worker_chain,
@@ -502,19 +503,17 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         if orchestrator is None:
             result["message"] = "run_RAG_check requires an active orchestrator."
             return result
-        if not has_parent_annotation_outputs(orchestrator):
+        executed, ask_user_count = run_rag_check_workers(orchestrator, force=True)
+        if executed and executed[-1].get("status") == "blocked":
             result.update(
                 {
                     "applied": False,
-                    "message": (
-                        "RAG check is not available yet because parent annotation outputs do not exist. "
-                        "Run the parent pipeline first."
-                    ),
+                    "message": "RAG check cannot start because parent annotation outputs are not available.",
                     "next_step": "run_parent_pipeline",
+                    "executed_workers": executed,
                 }
             )
             return result
-        executed, ask_user_count = run_rag_check_workers(orchestrator, force=True)
         result.update(
             {
                 "applied": True,
@@ -733,11 +732,40 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
             {"celltype": celltype, "note": str(intent.get("raw_text") or ""), "added_at": utc_now()},
         )
         memory_path = save_agent_memory(config, memory)
-        executed = run_gptanno_worker_chain(
-            orchestrator,
-            SUBCLUSTER_WORKERS,
-            force=True,
-        )
+        parent_ready, parent_workers, parent_readiness = ensure_parent_annotation_outputs(orchestrator, force=True)
+        if not parent_ready:
+            raw_config["alignment"]["celltypes_to_subcluster"] = original_values
+            _save_raw_config(config_path, raw_config)
+            _refresh_orchestrator_config(orchestrator, config_path)
+            result.update(
+                {
+                    "applied": False,
+                    "updated_config": str(config_path),
+                    "updated_memory": str(memory_path),
+                    "message": (
+                        f"Subcluster pipeline for '{celltype}' cannot start because parent annotation outputs are not available."
+                    ),
+                    "next_step": "run_parent_pipeline",
+                    "executed_workers": parent_workers
+                    or [
+                        {
+                            "worker": "assign_parent_labels",
+                            "status": "blocked",
+                            "notes": parent_readiness.get("notes", []),
+                            "artifacts": {"missing_prerequisites": parent_readiness.get("missing", [])},
+                        }
+                    ],
+                }
+            )
+            return result
+        executed = [
+            *parent_workers,
+            *run_gptanno_worker_chain(
+                orchestrator,
+                SUBCLUSTER_WORKERS,
+                force=True,
+            ),
+        ]
         result.update(
             {
                 "applied": True,

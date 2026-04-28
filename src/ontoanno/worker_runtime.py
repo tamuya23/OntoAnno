@@ -380,25 +380,37 @@ def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]
         notes.append("This worker auto-runs both subcluster annotation branches if needed.")
     elif worker == "build_review_packets":
         if not has_parent_outputs:
-            missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
-            notes.append(
-                "Run parent annotation through assign_parent_labels first, or configure inputs.annotation_parent_rds with existing GPTAnno annotation artifacts."
-            )
+            if can_run_parent_backbone:
+                notes.append("This worker auto-runs parent annotation prerequisites if needed.")
+            else:
+                missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
+                notes.append(
+                    "Run parent annotation through assign_parent_labels first, or configure inputs.annotation_parent_rds with existing GPTAnno annotation artifacts."
+                )
     elif worker == "decide_rag_check":
         if not _has_review_packets(orchestrator):
             missing = [str(orchestrator.run_dir / "review_packets" / "index.json")]
             notes.append("Run build_review_packets first.")
     elif worker == "build_candidate_map":
         if not has_parent_outputs:
-            missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
+            if can_run_parent_backbone:
+                notes.append("This worker auto-runs parent annotation prerequisites if needed.")
+            else:
+                missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
         notes.append("This worker auto-runs build_review_packets and decide_rag_check(initial) if needed.")
     elif worker == "retrieve_rag_evidence":
         if not has_parent_outputs:
-            missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
+            if can_run_parent_backbone:
+                notes.append("This worker auto-runs parent annotation prerequisites if needed.")
+            else:
+                missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
         notes.append("This proxy worker auto-runs candidate-map prerequisites if needed.")
     elif worker == "run_llm_compare":
         if not has_parent_outputs:
-            missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
+            if can_run_parent_backbone:
+                notes.append("This worker auto-runs parent annotation prerequisites if needed.")
+            else:
+                missing = [str(parent_seurat_rds), str(parent_dir / "parent_ontology_mapping.csv")]
         notes.append("This worker auto-runs review packets, controller, candidate map, and post-ontology planning if needed.")
     elif worker == "human_review":
         if not _has_review_packets(orchestrator):
@@ -422,8 +434,13 @@ def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]
                 notes.append("No human-review decision file exists, but terminal controller states can be exported automatically.")
     elif worker == "generate_report":
         if not has_parent_annotation_outputs(orchestrator):
-            missing = [str(parent_seurat_rds)]
-            notes.append("Run parent annotation first, or configure inputs.annotation_parent_rds with existing GPTAnno annotation artifacts.")
+            if can_run_parent_backbone:
+                notes.append("This worker auto-runs parent annotation prerequisites if needed.")
+            else:
+                missing = [parent_backbone_missing]
+                notes.append(
+                    "Run parent annotation first, or configure inputs.annotation_parent_rds with existing GPTAnno annotation artifacts."
+                )
 
     missing = [item for item in missing if item]
     ok = len(missing) == 0
@@ -433,6 +450,41 @@ def worker_prerequisite_status(orchestrator: Any, worker: str) -> dict[str, Any]
         "missing": missing,
         "notes": notes,
     }
+
+
+def ensure_parent_annotation_outputs(
+    orchestrator: Any,
+    *,
+    force: bool = True,
+) -> tuple[bool, list[dict[str, Any]], dict[str, Any]]:
+    """Create parent annotation artifacts when a downstream worker needs them.
+
+    This covers the marker-genes-only entry point: users may provide cluster marker
+    files, skip marker discovery, and still ask for RAG, subcluster, or report.
+    """
+    if has_parent_annotation_outputs(orchestrator):
+        return True, [], {"ok": True, "status": "ready", "missing": [], "notes": []}
+
+    readiness = worker_prerequisite_status(orchestrator, "assign_parent_labels")
+    if not readiness.get("ok"):
+        return False, [_blocked_worker_result("assign_parent_labels", readiness)], readiness
+
+    executed = run_gptanno_worker_chain(orchestrator, PARENT_BACKBONE_WORKERS, force=force)
+    if has_parent_annotation_outputs(orchestrator):
+        return True, executed, {
+            "ok": True,
+            "status": "ready",
+            "missing": [],
+            "notes": ["Generated parent annotation outputs as downstream prerequisites."],
+        }
+
+    readiness = {
+        "ok": False,
+        "status": "blocked",
+        "missing": ["parent annotation outputs"],
+        "notes": ["Parent backbone completed, but required parent annotation artifacts were not found."],
+    }
+    return False, [*executed, _blocked_worker_result("assign_parent_labels", readiness)], readiness
 
 
 def _controller_cluster_ids(run_dir: Path, action: str) -> list[str]:
@@ -533,22 +585,30 @@ def run_gptanno_worker_chain(
 
 
 def run_review_packets_worker(orchestrator: Any, *, force: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not has_parent_annotation_outputs(orchestrator):
+    parent_ready, parent_workers, readiness = ensure_parent_annotation_outputs(orchestrator, force=force)
+    if not parent_ready:
         outputs = {"missing_prerequisite": "annotate_parent outputs"}
         return outputs, _worker_result(
             worker="build_review_packets",
             implementation="build_review_packets",
             outputs=outputs,
             status="blocked",
-            notes=["RAG check requires existing parent annotation outputs. Run the parent pipeline first."],
+            notes=[
+                "RAG check requires parent annotation outputs, and OntoAnno could not create them automatically.",
+                *[str(item) for item in readiness.get("notes", [])],
+            ],
         )
     outputs = orchestrator.generate_review_packets(force=force)
     if force:
         _clear_downstream_rag_outputs(orchestrator)
+    notes = None
+    if parent_workers:
+        notes = ["Auto-ran parent annotation prerequisites before building review packets."]
     return outputs, _worker_result(
         worker="build_review_packets",
         implementation="build_review_packets",
         outputs=outputs,
+        notes=notes,
     )
 
 
@@ -702,17 +762,9 @@ def run_rag_check_workers(
     force: bool = True,
 ) -> tuple[list[dict[str, Any]], int]:
     executed: list[dict[str, Any]] = []
-
-    if not has_parent_annotation_outputs(orchestrator):
-        executed.append(
-            _worker_result(
-                worker="build_review_packets",
-                implementation="build_review_packets",
-                status="blocked",
-                outputs={"missing_prerequisite": "annotate_parent outputs"},
-                notes=["RAG check requires existing parent annotation outputs. Run the parent pipeline first."],
-            )
-        )
+    parent_ready, parent_workers, _ = ensure_parent_annotation_outputs(orchestrator, force=force)
+    executed.extend(parent_workers)
+    if not parent_ready:
         return executed, 0
 
     _, review_worker = run_review_packets_worker(orchestrator, force=force)
@@ -757,14 +809,9 @@ def run_rag_check_workers(
 
 
 def _run_candidate_map_with_prereqs(orchestrator: Any, *, force: bool) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    if not has_parent_annotation_outputs(orchestrator):
-        return None, _worker_result(
-            worker="build_candidate_map",
-            implementation="build_ontology_relations",
-            status="blocked",
-            outputs={"missing_prerequisite": "annotate_parent outputs"},
-            notes=["Candidate-map construction requires existing parent annotation outputs."],
-        )
+    parent_ready, _, readiness = ensure_parent_annotation_outputs(orchestrator, force=force)
+    if not parent_ready:
+        return None, _blocked_worker_result("build_candidate_map", readiness)
     run_review_packets_worker(orchestrator, force=False)
     run_decide_rag_check_worker(orchestrator, phase="initial", force=False)
     ontology_cluster_ids = _controller_cluster_ids(orchestrator.run_dir, "build_ontology_relations")
@@ -772,14 +819,9 @@ def _run_candidate_map_with_prereqs(orchestrator: Any, *, force: bool) -> tuple[
 
 
 def _run_llm_compare_with_prereqs(orchestrator: Any, *, force: bool) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    if not has_parent_annotation_outputs(orchestrator):
-        return None, _worker_result(
-            worker="run_llm_compare",
-            implementation="build_llm_compare",
-            status="blocked",
-            outputs={"missing_prerequisite": "annotate_parent outputs"},
-            notes=["LLM compare requires existing parent annotation outputs."],
-        )
+    parent_ready, _, readiness = ensure_parent_annotation_outputs(orchestrator, force=force)
+    if not parent_ready:
+        return None, _blocked_worker_result("run_llm_compare", readiness)
     _run_candidate_map_with_prereqs(orchestrator, force=False)
     run_decide_rag_check_worker(orchestrator, phase="post_ontology", force=False)
     llm_cluster_ids = _controller_cluster_ids(orchestrator.run_dir, "run_llm_compare")
@@ -877,6 +919,11 @@ def run_export_reviewed_parent_worker(orchestrator: Any) -> tuple[dict[str, Any]
 
 
 def run_generate_report_worker(orchestrator: Any, *, force: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
+    parent_ready, parent_workers, readiness = ensure_parent_annotation_outputs(orchestrator, force=force)
+    if not parent_ready:
+        outputs = {"missing_prerequisite": "annotate_parent outputs"}
+        return outputs, _blocked_worker_result("generate_report", readiness)
+
     manifest_outputs = orchestrator.manifest.get("outputs", {})
     reviewed_outputs = (
         manifest_outputs.get("reviewed_parent", {})
@@ -896,6 +943,7 @@ def run_generate_report_worker(orchestrator: Any, *, force: bool = True) -> tupl
         worker="generate_report",
         implementation="orchestrator.run(report)",
         outputs=outputs,
+        notes=["Auto-ran parent annotation prerequisites before report generation."] if parent_workers else None,
     )
 
 
@@ -917,7 +965,13 @@ def run_named_worker(
         return run_gptanno_worker_chain(orchestrator, [worker], force=True if force else False)[0]
 
     if worker in SUBCLUSTER_WORKERS:
-        return run_gptanno_worker_chain(orchestrator, [worker], force=True if force else False)[0]
+        parent_ready, parent_workers, parent_readiness = ensure_parent_annotation_outputs(orchestrator, force=True)
+        if not parent_ready:
+            return _blocked_worker_result(worker, parent_readiness)
+        result = run_gptanno_worker_chain(orchestrator, [worker], force=True if force else False)[0]
+        if parent_workers:
+            result.setdefault("notes", []).append("Auto-ran parent annotation prerequisites first.")
+        return result
 
     if worker == "build_review_packets":
         _, result = run_review_packets_worker(orchestrator, force=force)

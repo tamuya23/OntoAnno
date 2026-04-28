@@ -1,11 +1,16 @@
 project:
-  name: DockerImportDemo
-  work_dir: /work/DockerImportDemo
+  name: DemoProjectOptional
+  work_dir: /work/DemoProjectOptional
 
 inputs:
-  manual_labels_csv: null
+  seurat_rds: /data/my_project/my_dataset.rds
+  # Optional reference labels for evaluation/comparison only.
+  reference_labels_csv: null
+  # Optional literature PDFs for external evidence extraction.
   pdf_dir: null
-  annotation_output_dir: /data/example_project/output
+  # Optional precomputed cluster markers. If set, OntoAnno skips marker detection
+  # and starts parent annotation from markers_res_<resolution>.rds files.
+  marker_genes_dir: null
 
 policy:
   ontology: true
@@ -40,13 +45,14 @@ annotation:
   sub_res:
     - 0.1
     - 0.2
-  preprocess: false
+  preprocess: true
   min_cell_count: 3000
   tissue_name: replace_with_your_dataset_tissue
   n_runs_parent: 10
   n_runs_sub: 10
 
 alignment:
+  # Optional: predefine parent cell types to subcluster.
   celltypes_to_subcluster: null
   user_restrict_to: {}
   combine_restrictions: true
@@ -55,9 +61,9 @@ alignment:
 
 evaluation:
   enabled: false
+  # Column name inside reference_labels_csv when evaluation.enabled is true.
   manual_col: null
   baselines: []
 
 report:
   format: html
-
