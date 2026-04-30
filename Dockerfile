@@ -16,8 +16,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     gfortran \
+    libblas-dev \
+    libcairo2-dev \
+    libfftw3-dev \
+    libgdal-dev \
+    libgeos-dev \
     libgit2-dev \
+    libgsl-dev \
+    liblapack-dev \
+    libnlopt-dev \
+    libproj-dev \
+    libudunits2-dev \
     python3 \
+    python3-apt \
+    python3-dbus \
+    python3-gi \
     python3-pip \
     python3-dev \
     python3-venv \
