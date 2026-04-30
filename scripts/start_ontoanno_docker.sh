@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ROOT_DIR}/.env"
 
 container_config_path() {
@@ -42,7 +42,7 @@ container_config_path() {
       ;;
     *)
       printf 'Error: Docker can only see config files under configs/, data/, or work/.\n' >&2
-      printf 'Move the file under configs/ and run: ./start_ontoanno_docker.sh configs/%s\n' "$(basename "${host_path}")" >&2
+      printf 'Move the file under configs/ and run: ./scripts/start_ontoanno_docker.sh configs/%s\n' "$(basename "${host_path}")" >&2
       return 1
       ;;
   esac
@@ -66,7 +66,7 @@ find_docker() {
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   printf 'Error: %s not found.\n' "${ENV_FILE}" >&2
-  printf 'Run: bash docker_setup.sh\n' >&2
+  printf 'Run: bash scripts/docker_setup.sh\n' >&2
   exit 1
 fi
 

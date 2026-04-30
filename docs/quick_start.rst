@@ -25,10 +25,10 @@ Choose Installation Method
      - Main command
    * - Docker
      - You are on a laptop, workstation, or Linux server with Docker.
-     - ``./start_ontoanno_docker.sh``
+     - ``./scripts/start_ontoanno_docker.sh``
    * - Apptainer
      - You are on an HPC system where Docker is not allowed.
-     - ``./start_ontoanno_apptainer.sh``
+     - ``./scripts/start_ontoanno_apptainer.sh``
 
 Install Docker if Needed
 ------------------------
@@ -55,7 +55,7 @@ Use Docker if you are on your own computer or a regular server.
 
    .. code-block:: bash
 
-      bash docker_setup.sh
+      bash scripts/docker_setup.sh
       OPENAI_API_KEY=your_api_key_here
 
 2. Put your data files in ``data/``. Then configure ``configs/demo.yaml``
@@ -65,7 +65,7 @@ Use Docker if you are on your own computer or a regular server.
 
    .. code-block:: bash
 
-      ./start_ontoanno_docker.sh configs/demo.yaml
+      ./scripts/start_ontoanno_docker.sh configs/demo.yaml
 
 
 Apptainer Setup
@@ -77,7 +77,7 @@ Use Apptainer on HPC systems such as Longleaf.
 
    .. code-block:: bash
 
-      bash apptainer_setup.sh
+      bash scripts/apptainer_setup.sh
       OPENAI_API_KEY=your_api_key_here
       ONTOANNO_IMAGE=docker://ghcr.io/tamuya23/ontoanno:latest
 
@@ -88,7 +88,7 @@ Use Apptainer on HPC systems such as Longleaf.
 
    .. code-block:: bash
 
-      ./start_ontoanno_apptainer.sh configs/demo.yaml
+      ./scripts/start_ontoanno_apptainer.sh configs/demo.yaml
 
 Open the Web App
 ----------------

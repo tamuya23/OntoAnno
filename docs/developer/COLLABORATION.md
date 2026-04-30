@@ -7,15 +7,16 @@ all generated outputs as local artifacts.
 
 - `src/`
 - `scripts/`
-- `configs/`
+- public config templates such as `configs/demo.yaml`
 - `README.md`
-- `COLLABORATION.md`
+- `docs/developer/COLLABORATION.md`
 
 Do not commit:
 
 - `runs/`
 - `work/`
 - `backups/`
+- private project configs under `configs/`
 - temporary logs, notebooks, caches, or local virtual environments
 
 ## Best Workflow

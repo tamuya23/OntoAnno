@@ -1,26 +1,75 @@
-runs/
-work/
-backups/
-.cache/
+/runs/
+/work/
+/backups/
+/.cache/
+
+# Python caches/build/test outputs
 __pycache__/
 **/__pycache__/
 *.egg-info/
 src/*.egg-info/
 *.pyc
 *.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg
+*.whl
+
+# Local OS/editor/runtime noise
 .DS_Store
+*.log
+*.pid
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# R/RStudio local state
 .Rhistory
 .RData
+.Ruserdata
 .Rproj.user/
+
+# Notebook and virtualenv state
 .ipynb_checkpoints/
 .venv/
 venv/
+
+# Local secrets
 .ontoanno.env
 .env
-data/
+.streamlit/secrets.toml
+
+# Local datasets and generated single-cell artifacts
+/data/
+*.rds
+*.h5
+*.h5ad
+*.loom
+*.mtx
+
+# Local containers
 .apptainer/
 *.sif
 *.sif.*
+
+# Generated docs
+docs/_build/
+
+# OntoAnno local session state if created outside work/
+agent_memory.json
+ontoanno_memory.json
+ontoanno_session.json
+ontoanno_ui_history.json
 
 # Keep only public config templates in git. Project/dataset configs stay local.
 configs/*.yaml

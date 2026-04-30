@@ -22,21 +22,21 @@ cd OntoAnno
 Use Docker on a laptop, workstation, or regular Linux server:
 
 ```bash
-bash docker_setup.sh
+bash scripts/docker_setup.sh
 # edit .env and set OPENAI_API_KEY
 # put your Seurat .rds file under data/
 # edit configs/demo.yaml for your dataset
-./start_ontoanno_docker.sh configs/demo.yaml
+./scripts/start_ontoanno_docker.sh configs/demo.yaml
 ```
 
 Use Apptainer on HPC systems where Docker is not available:
 
 ```bash
-bash apptainer_setup.sh
+bash scripts/apptainer_setup.sh
 # edit .env and set OPENAI_API_KEY
 # put your Seurat .rds file under data/
 # edit configs/demo.yaml for your dataset
-./start_ontoanno_apptainer.sh configs/demo.yaml
+./scripts/start_ontoanno_apptainer.sh configs/demo.yaml
 ```
 
 Then open the URL printed in the terminal, usually:

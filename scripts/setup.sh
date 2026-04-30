@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ROOT_DIR}/.ontoanno.env"
 
 print_line() {
@@ -171,7 +171,7 @@ print_line "Setup complete."
 print_line "Saved local settings in ${ENV_FILE}"
 print_line ""
 print_line "Start OntoAnno with:"
-print_line "  ./start_ontoanno.sh"
+print_line "  ./scripts/start_ontoanno.sh"
 print_line ""
 print_line "Or use another config file:"
-print_line "  ./start_ontoanno.sh configs/your_project.yaml"
+print_line "  ./scripts/start_ontoanno.sh configs/your_project.yaml"
