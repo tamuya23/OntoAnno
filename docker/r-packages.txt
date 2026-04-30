@@ -1,0 +1,14 @@
+Seurat
+ontologyIndex
+jsonlite
+ggplot2
+dplyr
+magrittr
+tidyr
+stringr
+igraph
+httr
+patchwork
+rlang
+pkgload
+ellmer
