@@ -200,7 +200,7 @@ def _tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "extract_external_evidence",
-                "description": "Extract candidate celltype-marker evidence from external sources such as user-specified papers, PDFs, or reference databases. This intent is registered, but its worker chain may still be a placeholder.",
+                "description": "Extract celltype-marker evidence from provided literature PDFs only. Text is processed with GPTAnno/PDF2markers and selected pages are processed with the vision LLM. Do not use this for web search.",
                 "parameters": {
                     "type": "object",
                     "properties": {

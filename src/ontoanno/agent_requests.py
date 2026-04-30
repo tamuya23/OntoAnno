@@ -10,6 +10,7 @@ import yaml
 
 from .agent_memory import append_memory_entry, load_agent_memory, save_agent_memory
 from .config import load_config
+from .external_evidence import ExternalEvidenceError, extract_literature_evidence_from_pdf
 from .review_packets import resolve_imported_parent_annotations
 from .utils import utc_now
 from .worker_runtime import (
@@ -316,6 +317,39 @@ def _normalize_resolution_name(value: Any) -> str | None:
     if text.startswith("res_"):
         return text
     return f"res_{text}"
+
+
+def _extract_pdf_path_candidates(config: dict[str, Any], intent: dict[str, Any]) -> list[Path]:
+    candidates: list[Path] = []
+    search_text = " ".join(
+        str(intent.get(key) or "")
+        for key in ("source_hint", "topic", "raw_text", "reason")
+    )
+    tokens = [
+        *_extract_quoted(search_text),
+        *re.findall(r"(?<!\S)(/[^ \t\r\n'\"<>]+\.pdf)\b", search_text, flags=re.IGNORECASE),
+        *re.findall(r"(?<!\S)([^ \t\r\n'\"<>]+\.pdf)\b", search_text, flags=re.IGNORECASE),
+    ]
+    config_dir = _config_path(config).parent
+    for token in tokens:
+        cleaned = token.strip().strip(".,;:()[]{}")
+        if not cleaned.lower().endswith(".pdf"):
+            continue
+        path = Path(cleaned)
+        if not path.is_absolute():
+            path = config_dir / path
+        if path.exists() and path.is_file() and path.suffix.lower() == ".pdf" and path not in candidates:
+            candidates.append(path.resolve())
+
+    pdf_dir = config.get("inputs", {}).get("pdf_dir")
+    if pdf_dir:
+        root = Path(str(pdf_dir))
+        if root.exists() and root.is_dir():
+            for path in sorted(root.iterdir()):
+                if path.is_file() and path.suffix.lower() == ".pdf" and path.resolve() not in candidates:
+                    candidates.append(path.resolve())
+    return candidates
+
 
 def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestrator: Any | None = None) -> dict[str, Any]:
     memory = load_agent_memory(config)
@@ -779,9 +813,111 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         return result
 
     if intent_type == "extract_external_evidence":
-        result["message"] = (
-            "extract_external_evidence is registered as a top-level intent, but its worker chain is still a placeholder. "
-            "Online search / PDF extraction will be connected later."
+        pdf_paths = _extract_pdf_path_candidates(config, intent)
+        if not pdf_paths:
+            result.update(
+                {
+                    "applied": False,
+                    "message": (
+                        "No PDF input was found for external-evidence extraction. "
+                        "Upload a PDF in the External Evidence panel, provide a PDF path in the request, "
+                        "or configure inputs.pdf_dir. Web search is intentionally not implemented."
+                    ),
+                    "next_step": "upload_pdf_external_evidence",
+                    "executed_workers": [
+                        {
+                            "worker": "extract_external_evidence",
+                            "status": "blocked",
+                            "notes": [
+                                "This intent only extracts evidence from provided PDFs.",
+                                "Text evidence uses GPTAnno/PDF2markers; selected pages use the vision LLM.",
+                                "Web search/database search is intentionally disabled.",
+                            ],
+                            "artifacts": {"missing_prerequisites": ["PDF path or inputs.pdf_dir"]},
+                        }
+                    ],
+                }
+            )
+            return result
+
+        output_summaries = []
+        total_text = 0
+        total_image = 0
+        total_entries = 0
+        memory_path = None
+        executed_workers = []
+        for pdf_path in pdf_paths:
+            try:
+                extraction = extract_literature_evidence_from_pdf(
+                    config=config,
+                    pdf_path=pdf_path,
+                    pages=[1, 2, 3, 4, 5, 6],
+                    dpi=150,
+                )
+            except ExternalEvidenceError as exc:
+                result.update(
+                    {
+                        "applied": False,
+                        "message": f"PDF evidence extraction failed for {pdf_path.name}: {exc}",
+                        "next_step": "fix_pdf_evidence_inputs",
+                        "executed_workers": [
+                            {
+                                "worker": "extract_external_evidence",
+                                "status": "failed",
+                                "notes": [str(exc)],
+                                "artifacts": {"pdf": str(pdf_path)},
+                            }
+                        ],
+                    }
+                )
+                return result
+            total_text += int(extraction.get("text_evidence_count") or 0)
+            total_image += int(extraction.get("image_evidence_count") or 0)
+            total_entries += int(extraction.get("evidence_count") or 0)
+            memory_path = extraction.get("memory_path") or memory_path
+            output_summaries.append(
+                {
+                    "pdf": str(pdf_path),
+                    "evidence_count": extraction.get("evidence_count"),
+                    "text_evidence_count": extraction.get("text_evidence_count"),
+                    "image_evidence_count": extraction.get("image_evidence_count"),
+                    "memory_path": extraction.get("memory_path"),
+                    "pdf2markers_final_csv": extraction.get("pdf2markers_final_csv"),
+                    "pdf2markers_filtered_csv": extraction.get("pdf2markers_filtered_csv"),
+                    "pdf2markers_log": extraction.get("pdf2markers_log"),
+                }
+            )
+            executed_workers.append(
+                {
+                    "worker": "extract_external_evidence",
+                    "status": "completed",
+                    "notes": [
+                        "Extracted text evidence with GPTAnno/PDF2markers.",
+                        "Extracted figure/page evidence with the vision LLM.",
+                    ],
+                    "artifacts": {
+                        "pdf": str(pdf_path),
+                        "pdf2markers_final_csv": extraction.get("pdf2markers_final_csv"),
+                        "pdf2markers_filtered_csv": extraction.get("pdf2markers_filtered_csv"),
+                        "pdf2markers_log": extraction.get("pdf2markers_log"),
+                    },
+                }
+            )
+        if orchestrator is not None:
+            clear_rag_dependent_outputs(orchestrator)
+        result.update(
+            {
+                "applied": True,
+                "updated_memory": str(memory_path) if memory_path else None,
+                "message": (
+                    f"Extracted literature evidence from {len(pdf_paths)} PDF(s): "
+                    f"{total_entries} total entry/entries "
+                    f"({total_text} from PDF2markers text, {total_image} from vision page extraction)."
+                ),
+                "next_step": "run_RAG_check",
+                "executed_workers": executed_workers,
+                "external_evidence_outputs": output_summaries,
+            }
         )
         return result
 

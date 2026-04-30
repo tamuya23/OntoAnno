@@ -249,7 +249,7 @@ top_level_intents:
 
   extract_external_evidence:
     user_facing: true
-    description: "Extract candidate external evidence from papers, PDFs, or databases before optionally adding it into project memory."
+    description: "Extract literature-provided celltype-marker evidence from provided PDFs before adding it into project memory."
     controller_action: "extract_external_evidence"
     parameters:
       topic:
@@ -262,14 +262,17 @@ top_level_intents:
         type: string
         required: true
     current_execution:
-      mode: placeholder
+      mode: pdf_only_extraction
       notes:
-        - "This is a registered top-level intent."
-        - "Its worker chain is intentionally left unimplemented for now."
-        - "Future versions should search external sources, extract candidate celltype-marker evidence, and then hand off to add_external_evidence."
+        - "This intent is connected to PDF evidence extraction only."
+        - "Text evidence is extracted with the GPTAnno/PDF2markers text pipeline."
+        - "Selected PDF pages are rendered and sent to the vision LLM for figure-derived evidence."
+        - "Web search and database search are intentionally not implemented."
     outputs:
-      - "none yet"
-    status: "placeholder"
+      - "updated agent memory"
+      - "work/<project>/external_evidence/literature_pdf/<pdf>/literature_evidence_result.json"
+      - "work/<project>/external_evidence/literature_pdf/<pdf>/pdf2markers_text/*"
+    status: "connected_pdf_only"
 
 controller_only_actions:
   build_review_packets:
