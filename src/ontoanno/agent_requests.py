@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import csv
 import os
 import re
@@ -725,7 +726,17 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         if orchestrator is None:
             result["message"] = "run_subcluster_pipeline requires an active orchestrator."
             return result
-        raw_config.setdefault("alignment", {})
+        alignment_was_present = "alignment" in raw_config
+        original_alignment = copy.deepcopy(raw_config.get("alignment"))
+        if not isinstance(raw_config.get("alignment"), dict):
+            raw_config["alignment"] = {}
+
+        def restore_alignment_config() -> None:
+            if alignment_was_present:
+                raw_config["alignment"] = copy.deepcopy(original_alignment)
+            else:
+                raw_config.pop("alignment", None)
+
         values = raw_config["alignment"].get("celltypes_to_subcluster")
         if not isinstance(values, list):
             values = []
@@ -738,7 +749,7 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         _refresh_orchestrator_config(orchestrator, config_path)
         readiness = worker_prerequisite_status(orchestrator, "subcluster_find_markers")
         if not readiness.get("ok"):
-            raw_config["alignment"]["celltypes_to_subcluster"] = original_values
+            restore_alignment_config()
             _save_raw_config(config_path, raw_config)
             _refresh_orchestrator_config(orchestrator, config_path)
             result.update(
@@ -768,7 +779,7 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         memory_path = save_agent_memory(config, memory)
         parent_ready, parent_workers, parent_readiness = ensure_parent_annotation_outputs(orchestrator, force=True)
         if not parent_ready:
-            raw_config["alignment"]["celltypes_to_subcluster"] = original_values
+            restore_alignment_config()
             _save_raw_config(config_path, raw_config)
             _refresh_orchestrator_config(orchestrator, config_path)
             result.update(

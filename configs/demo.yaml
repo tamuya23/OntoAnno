@@ -1,60 +1,17 @@
 project:
-  name: DemoProject
-  work_dir: /work/DemoProject
+  name: DemoProject  # Short project name. Example: PDAC_sn
+  work_dir: /work/DemoProject  # Output folder. Example: /work/PDAC_sn
 
 inputs:
-  seurat_rds: /data/my_project/my_dataset.rds
-
-policy:
-  ontology: true
-  granularity: balanced
-  fallback: up
-  review_tie: true
-  review_nomatch: true
+  seurat_rds: /data/my_project/my_dataset.rds  # Seurat .rds file. Example: /data/pdac/pdac_sn.rds
 
 llm:
   annotation:
-    provider: openai
-    model: gpt-5
-    api_key: ${OPENAI_API_KEY}
-    api_url: ${OPENAI_BASE_URL}
-    system_prompt: null
-  external_evidence:
-    model: gpt-5
-    env:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
-  pdfmarkers:
-    model: gpt-5-nano
-    env:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+    api_key: ${OPENAI_API_KEY}  # Set OPENAI_API_KEY before running. Do not paste your key here.
 
 annotation:
-  species: human
-  parent_res:
+  species: human  # human or mouse.
+  tissue_name: replace_with_your_dataset_tissue  # Dataset context. Example: human pancreatic tumor
+  parent_res:  # Parent clustering resolutions to test. Examples: 0.1, 0.3, 0.5
     - 0.1
     - 0.3
-  sub_res:
-    - 0.1
-    - 0.2
-  preprocess: true
-  min_cell_count: 3000
-  tissue_name: replace_with_your_dataset_tissue
-  n_runs_parent: 10
-  n_runs_sub: 10
-
-alignment:
-  celltypes_to_subcluster: null
-  user_restrict_to: {}
-  combine_restrictions: true
-  manual_resolution_map: {}
-  on_missing_decision: stop
-
-evaluation:
-  enabled: false
-  manual_col: null
-  baselines: []
-
-report:
-  format: html

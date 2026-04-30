@@ -62,13 +62,16 @@ project:
 inputs:
   seurat_rds: /data/my_project/my_dataset.rds
 
+llm:
+  annotation:
+    api_key: ${OPENAI_API_KEY}
+
 annotation:
   species: human
   tissue_name: human pancreatic tumor
   parent_res:
     - 0.1
     - 0.3
-  preprocess: true
 ```
 
 Put data files under `data/`, then use container paths such as `/data/...` in

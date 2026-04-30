@@ -1,69 +1,46 @@
 project:
-  name: DemoProjectOptional
-  work_dir: /work/DemoProjectOptional
+  name: DemoProjectOptional  # Short project name. Example: PDAC_sn_optional
+  work_dir: /work/DemoProjectOptional  # Output folder. Example: /work/PDAC_sn_optional
 
 inputs:
-  seurat_rds: /data/my_project/my_dataset.rds
-  # Optional reference labels for evaluation/comparison only.
-  reference_labels_csv: null
-  # Optional literature PDFs for external evidence extraction.
-  pdf_dir: null
-  # Optional precomputed cluster markers. If set, OntoAnno skips marker detection
-  # and starts parent annotation from markers_res_<resolution>.rds files.
-  marker_genes_dir: null
+  seurat_rds: /data/my_project/my_dataset.rds  # Seurat .rds file. Example: /data/pdac/pdac_sn.rds
+  reference_labels_csv: null  # Optional label CSV for evaluation only. Example: /data/project/reference_labels.csv
+  pdf_dir: null  # null or folder of PDFs. Example: /data/project/papers
+  marker_genes_dir: null  # null or marker folder with markers_res_0.1.rds files.
 
 policy:
-  ontology: true
-  granularity: balanced
-  fallback: up
-  review_tie: true
-  review_nomatch: true
+  ontology: true  # true restricts RAG review decisions to ontology-mapped candidates when possible.
+  granularity: balanced  # Label specificity for review: coarse, balanced, or fine. Does not change clustering.
+  review_tie: true  # Send tied label decisions to human review.
+  review_nomatch: true  # Send unknown/unmatched labels to human review.
 
 llm:
   annotation:
-    provider: openai
-    model: gpt-5
-    api_key: ${OPENAI_API_KEY}
-    api_url: ${OPENAI_BASE_URL}
-    system_prompt: null
-  external_evidence:
-    model: gpt-5
-    env:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+    model: gpt-5  # Main annotation/review model. Changing this can change labels and cost.
+    api_key: ${OPENAI_API_KEY}  # Your OpenAI key from the environment. Do not paste it here.
   pdfmarkers:
-    model: gpt-5-nano
-    env:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+    model: gpt-5-nano  # Model used only when pdf_dir contains PDFs.
 
 annotation:
-  species: human
-  parent_res:
+  species: human  # human or mouse.
+  parent_res:  # Parent clustering resolutions to test. Examples: 0.1, 0.3, 0.5
     - 0.1
     - 0.3
-  sub_res:
+  sub_res:  # Subcluster resolutions used only when subclustering is requested.
     - 0.1
     - 0.2
-  preprocess: true
-  min_cell_count: 3000
-  tissue_name: replace_with_your_dataset_tissue
-  n_runs_parent: 10
-  n_runs_sub: 10
+  preprocess: true  # true or false. Use false only if the Seurat object is already processed.
+  min_cell_count: 3000  # Minimum cells required to run annotation. Example: 3000
+  tissue_name: replace_with_your_dataset_tissue  # Dataset context. Example: human pancreatic tumor
+  n_runs_parent: 10  # Repeated LLM runs for parent labels. Example: 3 for testing, 10 for final.
+  n_runs_sub: 10  # Repeated LLM runs for subcluster labels. Example: 3 or 10.
 
 alignment:
-  # Optional: predefine parent cell types to subcluster.
-  celltypes_to_subcluster: null
-  user_restrict_to: {}
-  combine_restrictions: true
-  manual_resolution_map: {}
-  on_missing_decision: stop
+  celltypes_to_subcluster: null  # null or parent labels to split further. Example: ["macrophage", "T cell"]
 
 evaluation:
-  enabled: false
-  # Column name inside reference_labels_csv when evaluation.enabled is true.
-  manual_col: null
-  baselines: []
+  enabled: false  # Set true only if reference_labels_csv is set.
+  manual_col: null  # null or label column name in reference_labels_csv. Example: celltype
 
 report:
-  format: html
+  format: html  # html or pdf.

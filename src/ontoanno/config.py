@@ -27,6 +27,59 @@ DEFAULT_RSCRIPT_CANDIDATES = [
     "/nas/longleaf/rhel9/apps/r/4.4.0/bin/Rscript",
     "/usr/bin/Rscript",
 ]
+DEFAULT_CONFIG = {
+    "policy": {
+        "ontology": True,
+        "granularity": "balanced",
+        "fallback": "up",
+        "review_tie": True,
+        "review_nomatch": True,
+    },
+    "llm": {
+        "annotation": {
+            "provider": "openai",
+            "model": "gpt-5",
+            "api_url": None,
+            "system_prompt": None,
+        },
+        "external_evidence": {
+            "model": "gpt-5",
+            "env": {
+                "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+                "OPENAI_BASE_URL": "${OPENAI_BASE_URL}",
+            },
+        },
+        "pdfmarkers": {
+            "model": "gpt-5-nano",
+            "env": {
+                "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+                "OPENAI_BASE_URL": "${OPENAI_BASE_URL}",
+            },
+        },
+    },
+    "annotation": {
+        "sub_res": [0.1, 0.2],
+        "preprocess": True,
+        "min_cell_count": 3000,
+        "n_runs_parent": 10,
+        "n_runs_sub": 10,
+    },
+    "alignment": {
+        "celltypes_to_subcluster": None,
+        "user_restrict_to": {},
+        "combine_restrictions": True,
+        "manual_resolution_map": {},
+        "on_missing_decision": "stop",
+    },
+    "evaluation": {
+        "enabled": False,
+        "manual_col": None,
+        "baselines": [],
+    },
+    "report": {
+        "format": "html",
+    },
+}
 
 
 def _resolve_env_placeholders(value: Any) -> Any:
@@ -37,6 +90,16 @@ def _resolve_env_placeholders(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _resolve_env_placeholders(item) for key, item in value.items()}
     return value
+
+
+def _deep_merge_defaults(defaults: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(defaults)
+    for key, value in raw.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_defaults(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _resolve_path(value: str | None, *, base_dir: Path) -> str | None:
@@ -113,7 +176,8 @@ def load_config(config_path: str | Path, repo_root: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ConfigError("Top-level config must be a mapping")
 
-    config = _resolve_env_placeholders(copy.deepcopy(raw))
+    defaults = _resolve_env_placeholders(DEFAULT_CONFIG)
+    config = _deep_merge_defaults(defaults, _resolve_env_placeholders(copy.deepcopy(raw)))
     config["_meta"] = {
         "config_path": str(path),
         "config_dir": str(path.parent),

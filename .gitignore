@@ -21,3 +21,9 @@ data/
 .apptainer/
 *.sif
 *.sif.*
+
+# Keep only public config templates in git. Project/dataset configs stay local.
+configs/*.yaml
+configs/*.yml
+!configs/demo.yaml
+!configs/demo_optional.yaml
