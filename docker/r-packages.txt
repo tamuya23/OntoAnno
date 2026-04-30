@@ -1,5 +1,4 @@
 Seurat
-presto
 ontologyIndex
 jsonlite
 ggplot2

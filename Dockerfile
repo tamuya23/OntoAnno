@@ -77,7 +77,7 @@ RUN apt-get update && \
     done < /tmp/ontoanno-r-apt-packages.txt && \
     if [[ "${#missing_apt_packages[@]}" -gt 0 ]]; then \
       printf 'No apt/r2u binary found for: %s\n' "${missing_apt_packages[*]}"; \
-      printf 'The R installer will try CRAN source fallback for the corresponding R package(s).\n'; \
+      printf 'The R installer will try source fallback only for packages listed in docker/r-packages.txt.\n'; \
     fi && \
     if [[ "${#apt_packages[@]}" -gt 0 ]]; then \
       printf 'Installing apt/r2u R packages: %s\n' "${apt_packages[*]}"; \
