@@ -12,6 +12,9 @@ message("R library paths:")
 for (path in .libPaths()) {
   message("  - ", path)
 }
+message("R executable: ", R.home("bin"))
+message("R version: ", R.version.string)
+message("OTEL_SDK_DISABLED=", Sys.getenv("OTEL_SDK_DISABLED", unset = ""))
 
 repos <- getOption("repos")
 if (is.null(repos) || identical(unname(repos["CRAN"]), "@CRAN@")) {

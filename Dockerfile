@@ -6,6 +6,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PATH=/opt/ontoanno-venv/bin:$PATH \
     ONTOANNO_RSCRIPT=/usr/bin/Rscript \
+    R_LIBS_SITE=/usr/local/lib/R/site-library:/usr/lib/R/site-library:/usr/lib/R/library \
+    OTEL_SDK_DISABLED=true \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     MPLCONFIGDIR=/app/.cache/matplotlib
 
@@ -56,7 +58,7 @@ COPY docker/r-packages.txt /tmp/ontoanno-r-packages.txt
 COPY docker/r-apt-packages.txt /tmp/ontoanno-r-apt-packages.txt
 COPY docker/install_r_dependencies.R /tmp/install_r_dependencies.R
 
-RUN mkdir -p /app/.cache/matplotlib /app/runs /work /data
+RUN mkdir -p /app/.cache/matplotlib /app/runs /work /data /usr/local/lib/R/site-library /usr/lib/R/site-library
 
 RUN apt-get update && \
     apt_packages=() && missing_apt_packages=() && \
@@ -78,7 +80,7 @@ RUN apt-get update && \
       printf 'Installing apt/r2u R packages: %s\n' "${apt_packages[*]}"; \
       apt-get install -y --no-install-recommends "${apt_packages[@]}"; \
     fi && \
-    Rscript /tmp/install_r_dependencies.R /tmp/ontoanno-r-packages.txt && \
+    /usr/bin/Rscript /tmp/install_r_dependencies.R /tmp/ontoanno-r-packages.txt && \
     rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/ontoanno-venv && \
