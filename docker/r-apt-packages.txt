@@ -1,4 +1,5 @@
 r-cran-seurat
+r-cran-presto
 r-cran-ontologyindex
 r-cran-jsonlite
 r-cran-ggplot2

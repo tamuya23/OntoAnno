@@ -41,10 +41,16 @@ def _router_system_prompt() -> str:
         "Prefer a single high-value action unless multiple actions are clearly necessary. "
         "When the request is about parent pipeline reruns, subcluster reruns, RAG-based review/checks, "
         "annotation preference changes such as granularity or resolution, researcher-provided external evidence, "
+        "reference-label comparison setup, final report format, finishing reviewed annotations, "
         "or extracting external evidence from papers/databases, "
         "translate it into a tool call. "
         "If the previous result suggested human_review and the user confirms with words like yes, sure, proceed, or continue, "
         "choose human_review rather than re-running run_RAG_check. "
+        "For parent pipeline requests, use mode='resume' for ordinary run/continue/keep going requests, and mode='rerun' only when the user explicitly asks to restart, rerun, or run from scratch. "
+        "If the user gives a final label for a specific human-review cluster, choose save_human_review_decision; do not guess the cluster id or final label. "
+        "If the user asks to finish, finalize, export, or close out human-reviewed annotations, choose finish_review. "
+        "If the user asks for an HTML or PDF report, choose run_report and pass the requested format. "
+        "If the user provides a manual/reference label CSV and label-column name for comparison, choose configure_reference_labels; do not guess the label-column name. "
         "Requests like 'look deeper into pericytes', 'drill down into fibroblasts', 'subcluster this cell type', "
         "or 'look inside this cell type' should normally be treated as run_subcluster_pipeline, not as a request for brainstorming options. "
         "Important distinction: resolution changes the clustering itself and can change cluster membership and marker genes; "
@@ -59,7 +65,9 @@ def _tool_gate_prompt() -> str:
     return (
         "Decide whether the user's latest request requires a tool call. "
         "Use a tool only if the request would change project state, write memory/config, or run analysis workers. "
+        "Requests to run, resume, continue, restart, or rerun the parent annotation pipeline require a tool call. "
         "Requests to look deeper into a specific cell type, drill down into a cell type, or subcluster a cell type do require a tool call. "
+        "Requests to save human-review decisions, configure reference labels, export reviewed annotations, or generate HTML/PDF reports require a tool call. "
         "If the request is read-only and can be answered from the provided context, answer it directly and do not request a tool. "
         "If a tool is required, reply with exactly: TOOL_REQUIRED"
     )
@@ -84,6 +92,11 @@ def _tool_schemas() -> list[dict[str, Any]]:
                     "type": "object",
                     "properties": {
                         "reason": {"type": "string"},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["resume", "rerun"],
+                            "description": "Use resume for normal run/continue requests; use rerun only for explicit restart/from-scratch requests.",
+                        },
                     },
                     "required": ["reason"],
                     "additionalProperties": False,
@@ -114,6 +127,11 @@ def _tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "format": {
+                            "type": "string",
+                            "enum": ["html", "pdf"],
+                            "description": "Optional final report format requested by the user.",
+                        },
                         "reason": {"type": "string"},
                     },
                     "required": ["reason"],
@@ -147,6 +165,75 @@ def _tool_schemas() -> list[dict[str, Any]]:
                         "reason": {"type": "string"},
                     },
                     "required": ["reason"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "finish_review",
+                "description": "Export reviewed parent annotations after RAG/human review decisions are available. Use this when the user says to finish, finalize, or export reviewed labels.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["reason"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "save_human_review_decision",
+                "description": "Save one explicit human-review decision for a specific unresolved cluster. Only call this when both cluster_id and final_label are explicit.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "cluster_id": {
+                            "type": "string",
+                            "description": "Cluster id shown in the human-review table.",
+                        },
+                        "final_label": {
+                            "type": "string",
+                            "description": "User-approved final label for this cluster.",
+                        },
+                        "user_note": {
+                            "type": "string",
+                            "description": "Optional note explaining the user's decision.",
+                        },
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["cluster_id", "final_label", "reason"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "configure_reference_labels",
+                "description": "Configure a manual/reference label CSV for later evaluation and report comparison. Only call this when the CSV path and label-column name are both explicit.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reference_labels_csv": {
+                            "type": "string",
+                            "description": "Path to the CSV that contains known/manual labels.",
+                        },
+                        "manual_col": {
+                            "type": "string",
+                            "description": "Column name in the CSV that contains known/manual labels.",
+                        },
+                        "enable_evaluation": {
+                            "type": "boolean",
+                            "description": "Whether to enable reference-label evaluation.",
+                        },
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["reference_labels_csv", "manual_col", "reason"],
                     "additionalProperties": False,
                 },
             },
@@ -272,6 +359,9 @@ def _state_summary(config: dict[str, Any], orchestrator: Any) -> str:
     memory = load_agent_memory(config)
     session = load_agent_session(config)
     policy = config.get("policy", {}) if isinstance(config.get("policy"), dict) else {}
+    inputs = config.get("inputs", {}) if isinstance(config.get("inputs"), dict) else {}
+    evaluation = config.get("evaluation", {}) if isinstance(config.get("evaluation"), dict) else {}
+    report = config.get("report", {}) if isinstance(config.get("report"), dict) else {}
     session_state = session.get("state", {}) if isinstance(session.get("state"), dict) else {}
     lines = [
         f"Project: {config['project']['name']}",
@@ -279,6 +369,9 @@ def _state_summary(config: dict[str, Any], orchestrator: Any) -> str:
         f"Current policy.granularity: {policy.get('granularity', 'balanced')}",
         "Resolution is the clustering choice; granularity is the label-specificity preference after clusters and marker genes are fixed.",
         f"Ontology restricted: {policy.get('ontology', True)}",
+        f"Report format: {report.get('format', 'html')}",
+        f"Reference labels CSV: {inputs.get('reference_labels_csv') or '(not configured)'}",
+        f"Reference-label evaluation enabled: {evaluation.get('enabled', False)}",
         f"Custom marker memory entries: {len(memory.get('custom_markers', []))}",
         f"Custom cell type memory entries: {len(memory.get('custom_celltypes', []))}",
         f"Session turns so far: {session.get('turn_count', 0)}",
@@ -429,6 +522,23 @@ def _call_openai_router(
         raise AgentRouterError(str(exc)) from exc
 
 
+def _infer_parent_pipeline_mode(text: str) -> str:
+    lower = text.lower()
+    rerun_terms = (
+        "from scratch",
+        "from the start",
+        "restart",
+        "rerun",
+        "re-run",
+        "run again",
+        "start over",
+        "重新跑",
+        "重跑",
+        "从头",
+    )
+    return "rerun" if any(term in lower for term in rerun_terms) else "resume"
+
+
 def _intent_from_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -439,6 +549,7 @@ def _intent_from_tool(
     if tool_name == "run_parent_pipeline":
         return {
             "intent_type": "run_parent_pipeline",
+            "mode": arguments.get("mode") or _infer_parent_pipeline_mode(user_request),
             "raw_text": user_request,
         }
     if tool_name == "run_subcluster_pipeline":
@@ -457,9 +568,31 @@ def _intent_from_tool(
             "intent_type": "human_review",
             "raw_text": user_request,
         }
+    if tool_name == "finish_review":
+        return {
+            "intent_type": "finish_review",
+            "raw_text": user_request,
+        }
+    if tool_name == "save_human_review_decision":
+        return {
+            "intent_type": "save_human_review_decision",
+            "cluster_id": arguments.get("cluster_id"),
+            "final_label": arguments.get("final_label"),
+            "user_note": arguments.get("user_note"),
+            "raw_text": user_request,
+        }
     if tool_name == "run_report":
         return {
             "intent_type": "run_report",
+            "format": arguments.get("format"),
+            "raw_text": user_request,
+        }
+    if tool_name == "configure_reference_labels":
+        return {
+            "intent_type": "configure_reference_labels",
+            "reference_labels_csv": arguments.get("reference_labels_csv"),
+            "manual_col": arguments.get("manual_col"),
+            "enable_evaluation": arguments.get("enable_evaluation", True),
             "raw_text": user_request,
         }
     if tool_name == "change_annotation_preference":

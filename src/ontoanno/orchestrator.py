@@ -22,6 +22,20 @@ class StageError(RuntimeError):
     pass
 
 
+GPTANNO_TOOL_OUTPUT_STAGES = (
+    "preprocess_parent",
+    "cluster_parent_markers",
+    "annotate_parent_raw",
+    "map_parent_ontology",
+    "select_parent_resolution",
+    "assign_parent_labels",
+    "subcluster_find_markers",
+    "subcluster_annotate_ontology",
+    "subcluster_annotate_inheritance",
+    "finalize_subcluster_annotations",
+)
+
+
 class Orchestrator:
     def __init__(self, repo_root: Path, config: dict[str, Any]) -> None:
         self.repo_root = repo_root
@@ -117,6 +131,21 @@ class Orchestrator:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def _load_gptanno_tool_outputs_from_disk(self, tool: str) -> dict[str, Any] | None:
+        outputs_path = self.specs_dir / f"gptanno-tool-{tool}.outputs.json"
+        if not outputs_path.exists():
+            return None
+        try:
+            payload = load_json(outputs_path)
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or not payload:
+            return None
+        log_path = self.logs_dir / f"gptanno-tool-{tool}.log"
+        if log_path.exists():
+            payload.setdefault("log", str(log_path))
+        return payload if self._outputs_artifacts_exist(payload) else None
+
     def _hydrate_manifest_outputs_from_disk(self) -> bool:
         outputs = self.manifest.setdefault("outputs", {})
         if not isinstance(outputs, dict):
@@ -124,6 +153,20 @@ class Orchestrator:
             self.manifest["outputs"] = outputs
 
         updated = False
+        gptanno_outputs = outputs.setdefault("gptanno_tools", {})
+        if not isinstance(gptanno_outputs, dict):
+            gptanno_outputs = {}
+            outputs["gptanno_tools"] = gptanno_outputs
+
+        for tool in GPTANNO_TOOL_OUTPUT_STAGES:
+            current = gptanno_outputs.get(tool)
+            if isinstance(current, dict) and current and self._outputs_artifacts_exist(current):
+                continue
+            disk_outputs = self._load_gptanno_tool_outputs_from_disk(tool)
+            if isinstance(disk_outputs, dict) and disk_outputs:
+                gptanno_outputs[tool] = disk_outputs
+                updated = True
+
         for stage in ("review_packets", "ontology_relations", "llm_compare", "controller", "reviewed_parent"):
             current = outputs.get(stage)
             if isinstance(current, dict) and current:

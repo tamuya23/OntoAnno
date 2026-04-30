@@ -6,8 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .agent_router import route_agent_request
-from .chat_cli import render_router_result, run_chat_session
+from .agent_router import AgentRouterError, route_agent_request
+from .chat_cli import (
+    clear_ui_history,
+    render_router_result,
+    run_chat_session,
+    sync_ui_history_error,
+    sync_ui_history_turn,
+)
 from .config import load_config, validate_config
 from .interactive_cli import run_interactive_review
 from .orchestrator import Orchestrator, format_validation_result
@@ -216,14 +222,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "ask":
         message = args.message or input("OntoAnno request> ").strip()
-        result = route_agent_request(
-            config=config,
-            orchestrator=orchestrator,
-            user_message=message,
-            apply=True,
-            reset_session=args.reset_session,
-        )
+        if args.reset_session:
+            clear_ui_history(config)
+        try:
+            result = route_agent_request(
+                config=config,
+                orchestrator=orchestrator,
+                user_message=message,
+                apply=True,
+                reset_session=args.reset_session,
+            )
+        except AgentRouterError as exc:
+            sync_ui_history_error(config, message, str(exc))
+            print(f"Agent error: {exc}", file=sys.stderr)
+            return 1
         render_router_result(result)
+        sync_ui_history_turn(config, message, result)
         if result.get("session_path"):
             print(f"Session: {result['session_path']}")
         return 0

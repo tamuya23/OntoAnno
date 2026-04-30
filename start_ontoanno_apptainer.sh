@@ -121,9 +121,15 @@ export APPTAINERENV_ONTOANNO_PORT="${ONTOANNO_PORT:-8501}"
 export APPTAINERENV_STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"
 
 cd "${ROOT_DIR}"
+RPROFILE_BIND=()
+if [[ -f "${ROOT_DIR}/docker/Rprofile.site" ]]; then
+  RPROFILE_BIND=(--bind "${ROOT_DIR}/docker/Rprofile.site:/usr/lib/R/etc/Rprofile.site")
+fi
+
 exec apptainer run --cleanenv \
   --bind "${ROOT_DIR}/data:/data" \
   --bind "${ROOT_DIR}/work:/work" \
   --bind "${ROOT_DIR}/runs:/app/runs" \
   --bind "${ROOT_DIR}/configs:/app/configs" \
+  "${RPROFILE_BIND[@]}" \
   "${SIF_PATH}" "$@"

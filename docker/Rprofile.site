@@ -1,0 +1,21 @@
+## OntoAnno container R startup profile.
+##
+## rocker/r2u enables bspm from Rprofile.site. In Apptainer/HPC containers
+## there is usually no system D-Bus service, so bspm emits a long warning unless
+## sudo mode is enabled before bspm::enable() runs.
+
+local({
+    r <- getOption("repos")
+    r["CRAN"] <- "https://cloud.r-project.org"
+    options(repos = r)
+})
+
+options(
+    bspm.sudo = TRUE,
+    bspm.backend.check = FALSE,
+    bspm.version.check = FALSE
+)
+
+if (requireNamespace("bspm", quietly = TRUE)) {
+    suppressMessages(bspm::enable())
+}

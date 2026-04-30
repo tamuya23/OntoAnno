@@ -13,7 +13,7 @@ from .agent_memory import append_memory_entry, load_agent_memory, save_agent_mem
 from .config import load_config
 from .external_evidence import ExternalEvidenceError, extract_literature_evidence_from_pdf
 from .review_packets import resolve_imported_parent_annotations
-from .utils import utc_now
+from .utils import dump_json, ensure_dir, load_json, utc_now
 from .worker_runtime import (
     PARENT_BACKBONE_WORKERS,
     SUBCLUSTER_WORKERS,
@@ -21,6 +21,7 @@ from .worker_runtime import (
     clear_rag_dependent_outputs,
     ensure_parent_annotation_outputs,
     has_parent_annotation_outputs,
+    run_export_reviewed_parent_worker,
     run_generate_report_worker,
     run_gptanno_worker_chain,
     run_decide_rag_check_worker,
@@ -95,6 +96,26 @@ def _refresh_orchestrator_config(orchestrator: Any | None, config_path: Path) ->
     if repo_root is None:
         return
     orchestrator.config = load_config(config_path, Path(repo_root))
+
+
+def _parent_pipeline_mode(intent: dict[str, Any]) -> str:
+    mode = str(intent.get("mode") or "").strip().lower()
+    if mode in {"resume", "rerun"}:
+        return mode
+    raw_text = str(intent.get("raw_text") or "").lower()
+    rerun_terms = (
+        "from scratch",
+        "from the start",
+        "restart",
+        "rerun",
+        "re-run",
+        "run again",
+        "start over",
+        "重新跑",
+        "重跑",
+        "从头",
+    )
+    return "rerun" if any(term in raw_text for term in rerun_terms) else "resume"
 
 
 def _extract_quoted(text: str) -> list[str]:
@@ -243,6 +264,52 @@ def parse_agent_request(text: str) -> dict[str, Any]:
     raw = text.strip()
     lower = raw.lower()
 
+    decision_match = re.search(
+        r"\bcluster\s+([A-Za-z0-9_.-]+)\b.*?(?:->|=>|=| as | to |label(?:\s+as)?|标为|标成)\s+(.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if decision_match:
+        final_label = decision_match.group(2).strip().strip(" .。")
+        final_label = re.sub(r"^(?:should\s+be|is|:)\s+", "", final_label, flags=re.IGNORECASE).strip()
+        return {
+            "intent_type": "save_human_review_decision",
+            "cluster_id": decision_match.group(1).strip(),
+            "final_label": final_label,
+            "raw_text": raw,
+        }
+
+    if any(term in lower for term in ["finish review", "finalize review", "export reviewed", "导出review", "完成review"]):
+        return {
+            "intent_type": "finish_review",
+            "raw_text": raw,
+        }
+
+    if "report" in lower or "报告" in lower:
+        return {
+            "intent_type": "run_report",
+            "format": _requested_report_format({"raw_text": raw}),
+            "raw_text": raw,
+        }
+
+    if any(term in lower for term in ["reference label", "reference labels", "manual label", "manual labels", "known label", "known labels", "人工标签", "参考标签"]):
+        path_tokens = [
+            *_extract_quoted(raw),
+            *re.findall(r"(?<!\S)(/[^ \t\r\n'\"<>]+\.csv)\b", raw, flags=re.IGNORECASE),
+            *re.findall(r"(?<!\S)([^ \t\r\n'\"<>]+\.csv)\b", raw, flags=re.IGNORECASE),
+        ]
+        manual_col = None
+        column_match = re.search(r"(?:column|col|列)\s*[:=]?\s*([A-Za-z_][A-Za-z0-9_.-]*)", raw, flags=re.IGNORECASE)
+        if column_match:
+            manual_col = column_match.group(1)
+        return {
+            "intent_type": "configure_reference_labels",
+            "reference_labels_csv": path_tokens[0] if path_tokens else None,
+            "manual_col": manual_col,
+            "enable_evaluation": True,
+            "raw_text": raw,
+        }
+
     if any(term in lower for term in ["review", "rag check", "check again", "recheck", "重新检查", "重新review", "再看看"]):
         return {
             "intent_type": "run_RAG_check",
@@ -285,9 +352,24 @@ def parse_agent_request(text: str) -> dict[str, Any]:
             "raw_text": raw,
         }
 
-    if any(term in lower for term in ["from scratch", "from the start", "重新跑parent", "run parent pipeline"]):
+    if any(
+        term in lower
+        for term in [
+            "run parent annotation",
+            "run parent pipeline",
+            "parent annotation",
+            "parent pipeline",
+            "resume parent",
+            "continue parent",
+            "keep running",
+            "from scratch",
+            "from the start",
+            "重新跑parent",
+        ]
+    ):
         return {
             "intent_type": "run_parent_pipeline",
+            "mode": _parent_pipeline_mode({"raw_text": raw}),
             "raw_text": raw,
         }
 
@@ -318,6 +400,186 @@ def _normalize_resolution_name(value: Any) -> str | None:
     if text.startswith("res_"):
         return text
     return f"res_{text}"
+
+
+def _requested_report_format(intent: dict[str, Any]) -> str | None:
+    requested = str(intent.get("format") or "").strip().lower()
+    if requested:
+        return requested
+    raw_text = str(intent.get("raw_text") or "").lower()
+    if re.search(r"\bpdf\b", raw_text):
+        return "pdf"
+    if re.search(r"\bhtml?\b", raw_text):
+        return "html"
+    return None
+
+
+def _clear_report_outputs_if_possible(orchestrator: Any | None) -> None:
+    if orchestrator is None:
+        return
+    clear = getattr(orchestrator, "clear_report_outputs", None)
+    if callable(clear):
+        clear()
+
+
+def _as_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _cluster_sort_key(cluster_id: str) -> tuple[int, str]:
+    try:
+        return (0, f"{int(cluster_id):06d}")
+    except (TypeError, ValueError):
+        return (1, str(cluster_id))
+
+
+def _review_draft_path(run_dir: Path) -> Path:
+    return run_dir / "reviewed_parent" / "interactive_decisions_draft.json"
+
+
+def _load_review_draft(run_dir: Path) -> dict[str, dict[str, Any]]:
+    path = _review_draft_path(run_dir)
+    if not path.exists():
+        return {}
+    payload = load_json(path)
+    if not isinstance(payload, list):
+        return {}
+    return {
+        str(item.get("cluster_id") or ""): item
+        for item in payload
+        if isinstance(item, dict) and str(item.get("cluster_id") or "").strip()
+    }
+
+
+def _save_review_draft(run_dir: Path, decisions: dict[str, dict[str, Any]]) -> Path:
+    path = _review_draft_path(run_dir)
+    rows = [decisions[key] for key in sorted(decisions, key=_cluster_sort_key)]
+    dump_json(path, rows)
+    return path
+
+
+def _load_controller_states(run_dir: Path) -> list[dict[str, Any]]:
+    index_path = run_dir / "controller" / "index.json"
+    if not index_path.exists():
+        return []
+    index = load_json(index_path)
+    states: list[dict[str, Any]] = []
+    for item in index.get("states", []) if isinstance(index.get("states"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        state_path = Path(str(item.get("state_json") or ""))
+        state = load_json(state_path) if state_path.exists() else dict(item)
+        if isinstance(state, dict):
+            states.append(state)
+    states.sort(key=lambda state: _cluster_sort_key(str(state.get("cluster_id") or "")))
+    return states
+
+
+def _split_pipe_values(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [part.strip() for part in str(value or "").split("|") if part.strip()]
+
+
+def _decision_from_controller_state(
+    state: dict[str, Any],
+    *,
+    final_label: str,
+    selection_source: str,
+    user_note: str = "",
+) -> dict[str, Any]:
+    return {
+        "cluster_id": str(state.get("cluster_id") or ""),
+        "current_label": str(state.get("current_label") or state.get("label") or ""),
+        "final_label": final_label,
+        "selection_source": selection_source,
+        "status": str(state.get("llm_status") or ""),
+        "user_note": user_note,
+        "focus_candidates": _split_pipe_values(state.get("focus_candidates")),
+        "result_json": str(state.get("result_json") or ""),
+    }
+
+
+def _assemble_review_decisions(
+    states: list[dict[str, Any]],
+    draft: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    decisions: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for state in states:
+        cluster_id = str(state.get("cluster_id") or "")
+        current_label = str(state.get("current_label") or state.get("label") or "")
+        next_action = str(state.get("next_action") or "")
+        if next_action == "ask_user":
+            draft_decision = draft.get(cluster_id)
+            if not draft_decision:
+                missing.append(cluster_id)
+                continue
+            decisions.append(draft_decision)
+        elif next_action == "finalize_llm_choice":
+            final_label = str(state.get("recommended_label") or state.get("llm_best_candidate") or current_label)
+            decisions.append(
+                _decision_from_controller_state(
+                    state,
+                    final_label=final_label,
+                    selection_source="controller_llm_choose",
+                )
+            )
+        elif next_action == "finalize_keep_current":
+            decisions.append(
+                _decision_from_controller_state(
+                    state,
+                    final_label=current_label,
+                    selection_source="controller_keep_current",
+                )
+            )
+        else:
+            decisions.append(
+                _decision_from_controller_state(
+                    state,
+                    final_label=current_label,
+                    selection_source=f"controller_{next_action or 'unknown'}",
+                )
+            )
+    decisions.sort(key=lambda item: _cluster_sort_key(str(item.get("cluster_id") or "")))
+    return decisions, missing
+
+
+def _write_interactive_decision_files(run_dir: Path, decisions: list[dict[str, Any]]) -> tuple[Path, Path]:
+    output_dir = ensure_dir(run_dir / "reviewed_parent")
+    decisions_json = output_dir / "interactive_decisions.json"
+    decisions_csv = output_dir / "interactive_decisions.csv"
+    export_decisions: list[dict[str, Any]] = []
+    for row in decisions:
+        export_decisions.append(
+            {
+                "cluster_id": row.get("cluster_id", ""),
+                "current_label": row.get("current_label", ""),
+                "final_label": row.get("final_label", ""),
+                "focus_candidates": row.get("focus_candidates", []),
+                "result_json": row.get("result_json", ""),
+            }
+        )
+    dump_json(decisions_json, export_decisions)
+
+    fieldnames = ["cluster_id", "current_label", "final_label", "focus_candidates", "result_json"]
+    with decisions_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in export_decisions:
+            item = dict(row)
+            item["focus_candidates"] = " | ".join(item.get("focus_candidates", []))
+            writer.writerow(item)
+    return decisions_json, decisions_csv
 
 
 def _extract_pdf_path_candidates(config: dict[str, Any], intent: dict[str, Any]) -> list[Path]:
@@ -365,6 +627,45 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         "message": "",
         "next_step": "",
     }
+
+    if intent_type == "configure_reference_labels":
+        reference_labels_csv = str(intent.get("reference_labels_csv") or "").strip()
+        manual_col = str(intent.get("manual_col") or "").strip()
+        if not reference_labels_csv or not manual_col:
+            result["message"] = (
+                "Configuring reference-label comparison requires both reference_labels_csv and manual_col."
+            )
+            return result
+        enable_evaluation = _as_bool(intent.get("enable_evaluation"), default=True)
+        raw_config.setdefault("inputs", {})
+        raw_config["inputs"]["reference_labels_csv"] = reference_labels_csv
+        raw_config["inputs"]["manual_labels_csv"] = reference_labels_csv
+        raw_config.setdefault("evaluation", {})
+        raw_config["evaluation"]["enabled"] = enable_evaluation
+        raw_config["evaluation"]["manual_col"] = manual_col
+        _save_raw_config(config_path, raw_config)
+        _refresh_orchestrator_config(orchestrator, config_path)
+        _clear_report_outputs_if_possible(orchestrator)
+
+        reference_path = Path(reference_labels_csv).expanduser()
+        if not reference_path.is_absolute():
+            reference_path = config_path.parent / reference_path
+        existence_note = ""
+        if not reference_path.exists():
+            existence_note = f" The configured CSV does not exist yet at {reference_path}."
+        result.update(
+            {
+                "applied": True,
+                "updated_config": str(config_path),
+                "message": (
+                    "Configured reference-label comparison using "
+                    f"'{reference_labels_csv}' with label column '{manual_col}'."
+                    f"{existence_note}"
+                ),
+                "next_step": "run_report",
+            }
+        )
+        return result
 
     if intent_type == "change_annotation_preference":
         preference_type = str(intent.get("preference_type") or "").strip().lower()
@@ -501,6 +802,8 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         if orchestrator is None:
             result["message"] = "run_parent_pipeline requires an active orchestrator."
             return result
+        mode = _parent_pipeline_mode(intent)
+        force = mode == "rerun"
         readiness = worker_prerequisite_status(orchestrator, "assign_parent_labels")
         if not readiness.get("ok"):
             result.update(
@@ -522,12 +825,17 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         executed = run_gptanno_worker_chain(
             orchestrator,
             PARENT_BACKBONE_WORKERS,
-            force=True,
+            force=force,
         )
         result.update(
             {
                 "applied": True,
-                "message": "Completed parent backbone pipeline through assigned parent labels.",
+                "message": (
+                    "Reran parent backbone pipeline through assigned parent labels."
+                    if force
+                    else "Resumed parent backbone pipeline through assigned parent labels."
+                ),
+                "mode": mode,
                 "next_step": "run_RAG_check",
                 "executed_workers": executed,
             }
@@ -558,6 +866,161 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
                 ),
                 "next_step": "human_review" if ask_user_count > 0 else "export_reviewed_parent_annotations",
                 "executed_workers": executed,
+            }
+        )
+        return result
+
+    if intent_type == "save_human_review_decision":
+        if orchestrator is None:
+            result["message"] = "save_human_review_decision requires an active orchestrator."
+            return result
+        cluster_id = str(intent.get("cluster_id") or "").strip()
+        final_label = str(intent.get("final_label") or "").strip()
+        user_note = str(intent.get("user_note") or intent.get("raw_text") or "").strip()
+        if not cluster_id or not final_label:
+            result["message"] = "Saving a human-review decision requires both cluster_id and final_label."
+            return result
+        states = _load_controller_states(orchestrator.run_dir)
+        if not states:
+            result.update(
+                {
+                    "applied": False,
+                    "message": "No controller review states are available yet.",
+                    "next_step": "run_RAG_check" if has_parent_annotation_outputs(orchestrator) else "run_parent_pipeline",
+                    "executed_workers": [
+                        {
+                            "worker": "save_human_review_decision",
+                            "status": "blocked",
+                            "notes": ["Run RAG check before saving human-review decisions."],
+                            "artifacts": {
+                                "missing_prerequisites": [str(orchestrator.run_dir / "controller" / "index.json")]
+                            },
+                        }
+                    ],
+                }
+            )
+            return result
+        target_state = next((state for state in states if str(state.get("cluster_id") or "") == cluster_id), None)
+        if not target_state:
+            available = [str(state.get("cluster_id") or "") for state in states if str(state.get("cluster_id") or "")]
+            result.update(
+                {
+                    "applied": False,
+                    "message": f"Cluster '{cluster_id}' is not present in the current review states.",
+                    "next_step": "human_review",
+                    "executed_workers": [
+                        {
+                            "worker": "save_human_review_decision",
+                            "status": "blocked",
+                            "artifacts": {"available_clusters": available},
+                        }
+                    ],
+                }
+            )
+            return result
+        if str(target_state.get("next_action") or "") != "ask_user":
+            result.update(
+                {
+                    "applied": False,
+                    "message": f"Cluster '{cluster_id}' is not currently waiting for human review.",
+                    "next_step": "human_review",
+                    "executed_workers": [
+                        {
+                            "worker": "save_human_review_decision",
+                            "status": "blocked",
+                            "notes": [f"Current next_action is {target_state.get('next_action') or '(empty)'}."],
+                        }
+                    ],
+                }
+            )
+            return result
+
+        draft = _load_review_draft(orchestrator.run_dir)
+        draft[cluster_id] = _decision_from_controller_state(
+            target_state,
+            final_label=final_label,
+            selection_source="agent_human_review",
+            user_note=user_note,
+        )
+        draft_path = _save_review_draft(orchestrator.run_dir, draft)
+        decisions, missing = _assemble_review_decisions(states, draft)
+        artifacts: dict[str, Any] = {
+            "draft_json": str(draft_path),
+            "remaining_clusters": sorted(missing, key=_cluster_sort_key),
+        }
+        next_step = "human_review"
+        message = f"Saved human-review decision for cluster {cluster_id}: {final_label}."
+        if not missing:
+            decisions_json, decisions_csv = _write_interactive_decision_files(orchestrator.run_dir, decisions)
+            artifacts["decisions_json"] = str(decisions_json)
+            artifacts["decisions_csv"] = str(decisions_csv)
+            _clear_report_outputs_if_possible(orchestrator)
+            next_step = "finish_review"
+            message += " All unresolved clusters now have saved decisions."
+        else:
+            message += f" Remaining unresolved cluster(s): {', '.join(sorted(missing, key=_cluster_sort_key))}."
+        result.update(
+            {
+                "applied": True,
+                "message": message,
+                "next_step": next_step,
+                "executed_workers": [
+                    {
+                        "worker": "save_human_review_decision",
+                        "status": "completed",
+                        "artifacts": artifacts,
+                    }
+                ],
+            }
+        )
+        return result
+
+    if intent_type == "finish_review":
+        if orchestrator is None:
+            result["message"] = "finish_review requires an active orchestrator."
+            return result
+        readiness = worker_prerequisite_status(orchestrator, "export_reviewed_parent_annotations")
+        if not readiness.get("ok"):
+            missing_items = [str(item) for item in readiness.get("missing", [])]
+            if any("review_packets" in item or "controller" in item for item in missing_items):
+                next_step = "run_RAG_check" if has_parent_annotation_outputs(orchestrator) else "run_parent_pipeline"
+            else:
+                next_step = "human_review" if has_parent_annotation_outputs(orchestrator) else "run_parent_pipeline"
+            result.update(
+                {
+                    "applied": False,
+                    "message": "Reviewed parent annotations cannot be exported yet.",
+                    "next_step": next_step,
+                    "executed_workers": [
+                        {
+                            "worker": "export_reviewed_parent_annotations",
+                            "status": "blocked",
+                            "notes": readiness.get("notes", []),
+                            "artifacts": {"missing_prerequisites": readiness.get("missing", [])},
+                        }
+                    ],
+                }
+            )
+            return result
+        outputs, worker_result = run_export_reviewed_parent_worker(orchestrator)
+        if worker_result.get("status") == "blocked":
+            result.update(
+                {
+                    "applied": False,
+                    "message": "Reviewed parent annotations still need saved human-review decisions before export.",
+                    "next_step": "human_review",
+                    "executed_workers": [worker_result],
+                    "reviewed_parent_outputs": outputs,
+                }
+            )
+            return result
+        result.update(
+            {
+                "applied": True,
+                "message": "Exported reviewed parent annotations.",
+                "next_step": "run_report",
+                "executed_workers": [worker_result],
+                "reviewed_parent_outputs": outputs,
             }
         )
         return result
@@ -616,11 +1079,26 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         if orchestrator is None:
             result["message"] = "run_report requires an active orchestrator."
             return result
+        updated_report_format = False
+        requested_format = _requested_report_format(intent)
+        if requested_format:
+            if requested_format not in {"html", "pdf"}:
+                result["message"] = "Report format must be one of: html, pdf."
+                return result
+            raw_config.setdefault("report", {})
+            previous_format = str(raw_config["report"].get("format") or "html").strip().lower()
+            if previous_format != requested_format:
+                raw_config["report"]["format"] = requested_format
+                _save_raw_config(config_path, raw_config)
+                _refresh_orchestrator_config(orchestrator, config_path)
+                _clear_report_outputs_if_possible(orchestrator)
+                updated_report_format = True
         readiness = worker_prerequisite_status(orchestrator, "generate_report")
         if not readiness.get("ok"):
             result.update(
                 {
                     "applied": False,
+                    "updated_config": str(config_path) if updated_report_format else None,
                     "message": "Report generation cannot start because parent annotation outputs are not available yet.",
                     "next_step": "run_parent_pipeline",
                     "executed_workers": [
@@ -635,10 +1113,15 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
             )
             return result
         outputs, worker_result = run_generate_report_worker(orchestrator, force=True)
+        report_format = outputs.get("report_format") or requested_format or orchestrator.config.get("report", {}).get("format", "html")
+        message = f"Generated the final {report_format} report from current project artifacts."
+        if updated_report_format:
+            message = f"Updated report.format to '{requested_format}' and generated the final {report_format} report."
         result.update(
             {
                 "applied": True,
-                "message": "Generated the final report from current project artifacts.",
+                "updated_config": str(config_path) if updated_report_format else None,
+                "message": message,
                 "next_step": "",
                 "executed_workers": [worker_result],
                 "report_outputs": outputs,

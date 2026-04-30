@@ -206,17 +206,51 @@ finalize. You can also ask the agent to continue with manual review:
    Continue with human review
 
 For each unresolved cluster, choose the final label or enter a custom label.
+You can also save a specific decision through chat:
+
+.. code-block:: text
+
+   For cluster 3, label as cardiomyocyte
+
+After the decisions are saved, ask the agent to export the reviewed labels:
+
+.. code-block:: text
+
+   Finish review and export the reviewed annotations
+
+Reference Label Comparison
+--------------------------
+
+If you have a CSV with known or manual labels, you can give it to the agent
+instead of editing optional YAML fields by hand:
+
+.. code-block:: text
+
+   Compare with /data/project/manual_labels.csv using column celltype
+
+The agent will add the reference-label path and label-column name to the config
+and enable optional evaluation.
 
 Report
 ------
 
-The report module creates the final HTML report after annotation and review.
+The report module creates the final report after annotation and review.
 
 Typical chat request:
 
 .. code-block:: text
 
    Generate the final report
+
+To choose a format, say it directly:
+
+.. code-block:: text
+
+   Generate a PDF report
+
+.. code-block:: text
+
+   Generate an HTML report
 
 The report summarizes parent annotations, selected resolution, RAG review,
 human review decisions, available subcluster results, figures, and output

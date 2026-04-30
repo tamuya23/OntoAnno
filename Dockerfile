@@ -57,8 +57,11 @@ COPY GPTAnno/PDF2markers/requirements.txt /app/GPTAnno/PDF2markers/requirements.
 COPY docker/r-packages.txt /tmp/ontoanno-r-packages.txt
 COPY docker/r-apt-packages.txt /tmp/ontoanno-r-apt-packages.txt
 COPY docker/install_r_dependencies.R /tmp/install_r_dependencies.R
+COPY docker/Rprofile.site /tmp/ontoanno-Rprofile.site
 
 RUN mkdir -p /app/.cache/matplotlib /app/runs /work /data /usr/local/lib/R/site-library /usr/lib/R/site-library
+
+RUN cp /tmp/ontoanno-Rprofile.site "$(/usr/bin/R RHOME)/etc/Rprofile.site"
 
 RUN apt-get update && \
     apt_packages=() && missing_apt_packages=() && \

@@ -28,6 +28,7 @@ missing <- packages[!vapply(packages, requireNamespace, logical(1), quietly = TR
 if (length(missing)) {
   message("Installing missing R package(s) via the configured binary bridge: ", paste(missing, collapse = ", "))
   options(
+    bspm.sudo = TRUE,
     bspm.backend.check = FALSE,
     bspm.version.check = FALSE,
     install.packages.compile.from.source = "never"

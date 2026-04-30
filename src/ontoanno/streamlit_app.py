@@ -4,6 +4,7 @@ import base64
 import collections
 import csv
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -1928,6 +1929,28 @@ def _agent_job_state() -> dict[str, Any] | None:
     return st.session_state.get("ui_agent_job")
 
 
+def _tail_text(path: Path, *, max_lines: int = 60) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-max_lines:])
+
+
+def _agent_error_message(exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    parts = [message]
+    match = re.search(r"(?P<spec>/[^ \t\r\n]+/specs/gptanno-tool-(?P<tool>[A-Za-z0-9_-]+)\.json)", message)
+    if match:
+        spec_path = Path(match.group("spec"))
+        log_path = spec_path.parent.parent / "logs" / f"gptanno-tool-{match.group('tool')}.log"
+        tail = _tail_text(log_path)
+        if tail:
+            parts.append(f"Worker log: `{log_path}`")
+            parts.append(f"Last worker log lines:\n```text\n{tail}\n```")
+    return "\n\n".join(parts)
+
+
 def _start_agent_job(message: str) -> None:
     config_path = str(_config_path())
     config_for_history = load_config(config_path, _repo_root())
@@ -1961,7 +1984,8 @@ def _start_agent_job(message: str) -> None:
             )
             job["result"] = result
         except Exception as exc:  # noqa: BLE001
-            job["error"] = f"{exc}\n\n{traceback.format_exc()}"
+            job["error"] = _agent_error_message(exc)
+            job["traceback"] = traceback.format_exc()
         finally:
             if thread_config is not None:
                 if job.get("error"):
