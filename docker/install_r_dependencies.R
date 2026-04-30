@@ -8,6 +8,11 @@ packages <- trimws(packages)
 packages <- packages[nzchar(packages) & !startsWith(packages, "#")]
 packages <- unique(packages)
 
+message("R library paths:")
+for (path in .libPaths()) {
+  message("  - ", path)
+}
+
 repos <- getOption("repos")
 if (is.null(repos) || identical(unname(repos["CRAN"]), "@CRAN@")) {
   repos <- c(CRAN = Sys.getenv("CRAN_REPO", "https://cloud.r-project.org"))
@@ -36,8 +41,10 @@ if (length(failed)) {
   if (requireNamespace("bspm", quietly = TRUE)) {
     try(bspm::disable(), silent = TRUE)
   }
+  source_repo <- Sys.getenv("CRAN_SOURCE_REPO", "https://cloud.r-project.org")
   options(
     pkgType = "source",
+    repos = c(CRAN = source_repo),
     install.packages.compile.from.source = "always"
   )
   for (pkg in failed) {

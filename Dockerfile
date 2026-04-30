@@ -53,24 +53,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml /app/pyproject.toml
 COPY GPTAnno/PDF2markers/requirements.txt /app/GPTAnno/PDF2markers/requirements.txt
 COPY docker/r-packages.txt /tmp/ontoanno-r-packages.txt
+COPY docker/r-apt-packages.txt /tmp/ontoanno-r-apt-packages.txt
 COPY docker/install_r_dependencies.R /tmp/install_r_dependencies.R
 
 RUN mkdir -p /app/.cache/matplotlib /app/runs /work /data
 
 RUN apt-get update && \
-    apt_packages=() && \
-    while IFS= read -r pkg; do \
-      pkg="${pkg%%#*}"; \
-      pkg="$(printf '%s' "${pkg}" | tr -d '[:space:]')"; \
-      [[ -z "${pkg}" ]] && continue; \
-      apt_name="r-cran-$(tr '[:upper:]' '[:lower:]' <<< "${pkg}")"; \
+    apt_packages=() && missing_apt_packages=() && \
+    while IFS= read -r apt_name; do \
+      apt_name="${apt_name%%#*}"; \
+      apt_name="$(printf '%s' "${apt_name}" | tr -d '[:space:]')"; \
+      [[ -z "${apt_name}" ]] && continue; \
       if apt-cache show "${apt_name}" >/dev/null 2>&1; then \
         apt_packages+=("${apt_name}"); \
       else \
-        printf 'No r2u binary found for %s (%s); install.packages fallback will verify it.\n' "${pkg}" "${apt_name}"; \
+        missing_apt_packages+=("${apt_name}"); \
       fi; \
-    done < /tmp/ontoanno-r-packages.txt && \
+    done < /tmp/ontoanno-r-apt-packages.txt && \
+    if [[ "${#missing_apt_packages[@]}" -gt 0 ]]; then \
+      printf 'No apt/r2u binary found for: %s\n' "${missing_apt_packages[*]}"; \
+      printf 'The R installer will try CRAN source fallback for the corresponding R package(s).\n'; \
+    fi && \
     if [[ "${#apt_packages[@]}" -gt 0 ]]; then \
+      printf 'Installing apt/r2u R packages: %s\n' "${apt_packages[*]}"; \
       apt-get install -y --no-install-recommends "${apt_packages[@]}"; \
     fi && \
     Rscript /tmp/install_r_dependencies.R /tmp/ontoanno-r-packages.txt && \

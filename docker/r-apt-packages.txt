@@ -1,0 +1,14 @@
+r-cran-seurat
+r-cran-ontologyindex
+r-cran-jsonlite
+r-cran-ggplot2
+r-cran-dplyr
+r-cran-magrittr
+r-cran-tidyr
+r-cran-stringr
+r-cran-igraph
+r-cran-httr
+r-cran-patchwork
+r-cran-rlang
+r-cran-pkgload
+r-cran-ellmer
