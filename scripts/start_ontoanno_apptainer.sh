@@ -69,6 +69,32 @@ load_apptainer_if_needed() {
   command -v apptainer >/dev/null 2>&1
 }
 
+port_is_available() {
+  local port="$1"
+  ! ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"
+}
+
+select_port() {
+  local requested="${1:-8501}"
+  local port
+  if port_is_available "${requested}"; then
+    printf '%s\n' "${requested}"
+    return 0
+  fi
+
+  for port in $(seq "$((requested + 1))" "$((requested + 20))"); do
+    if port_is_available "${port}"; then
+      printf 'Port %s is not available; using %s instead.\n' "${requested}" "${port}" >&2
+      printf '%s\n' "${port}"
+      return 0
+    fi
+  done
+
+  printf 'Error: port %s is not available, and no free fallback port was found in %s-%s.\n' \
+    "${requested}" "$((requested + 1))" "$((requested + 20))" >&2
+  return 1
+}
+
 if [[ ! -f "${ENV_FILE}" ]]; then
   printf 'Error: %s not found.\n' "${ENV_FILE}" >&2
   printf 'Run: bash scripts/apptainer_setup.sh\n' >&2
@@ -117,7 +143,8 @@ export APPTAINERENV_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
 export APPTAINERENV_OPENAI_BASE_URL="${OPENAI_BASE_URL:-}"
 export APPTAINERENV_ONTOANNO_CL_OBO="${ONTOANNO_CL_OBO:-}"
 export APPTAINERENV_ONTOANNO_CONFIG="${ONTOANNO_CONFIG:-/app/configs/demo.yaml}"
-export APPTAINERENV_ONTOANNO_PORT="${ONTOANNO_PORT:-8501}"
+ONTOANNO_SELECTED_PORT="$(select_port "${ONTOANNO_PORT:-8501}")"
+export APPTAINERENV_ONTOANNO_PORT="${ONTOANNO_SELECTED_PORT}"
 export APPTAINERENV_STREAMLIT_BROWSER_GATHER_USAGE_STATS="false"
 
 cd "${ROOT_DIR}"
