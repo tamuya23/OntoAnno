@@ -30,6 +30,14 @@ pkgload::load_all(spec$gptanno_path, export_all = FALSE, helpers = FALSE, quiet 
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+env_or_null <- function(name) {
+  value <- Sys.getenv(name, unset = "")
+  if (!nzchar(value)) {
+    return(NULL)
+  }
+  value
+}
+
 build_llm_config <- function(llm_spec) {
   params_list <- llm_spec$params
   if (!is.null(params_list) &&
@@ -46,8 +54,8 @@ build_llm_config <- function(llm_spec) {
     provider = llm_spec$provider %||% "openai",
     model = llm_spec$model %||% "gpt-5",
     params = params_obj,
-    api_key = llm_spec$api_key %||% Sys.getenv("OPENAI_API_KEY", unset = NULL),
-    api_url = llm_spec$api_url %||% Sys.getenv("OPENAI_BASE_URL", unset = NULL),
+    api_key = llm_spec$api_key %||% env_or_null("OPENAI_API_KEY"),
+    api_url = llm_spec$api_url %||% env_or_null("OPENAI_BASE_URL"),
     system_prompt = llm_spec$system_prompt %||% NULL
   )
 }
