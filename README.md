@@ -62,10 +62,6 @@ project:
 inputs:
   seurat_rds: /data/my_project/my_dataset.rds
 
-llm:
-  annotation:
-    api_key: ${OPENAI_API_KEY}
-
 annotation:
   species: human
   tissue_name: human pancreatic tumor

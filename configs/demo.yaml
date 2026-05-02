@@ -5,10 +5,6 @@ project:
 inputs:
   seurat_rds: /data/my_project/my_dataset.rds  # Seurat .rds file. Example: /data/pdac/pdac_sn.rds
 
-llm:
-  annotation:
-    api_key: ${OPENAI_API_KEY}  # Set OPENAI_API_KEY before running. Do not paste your key here.
-
 annotation:
   species: human  # human or mouse.
   tissue_name: replace_with_your_dataset_tissue  # Dataset context. Example: human pancreatic tumor

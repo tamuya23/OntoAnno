@@ -22,10 +22,6 @@ For a first run, you usually only need to edit these fields:
    inputs:
      seurat_rds: /data/my_project/my_dataset.rds
 
-   llm:
-     annotation:
-       api_key: ${OPENAI_API_KEY}
-
    annotation:
      species: human
      tissue_name: human pancreatic tumor
@@ -50,9 +46,6 @@ For a first run, you usually only need to edit these fields:
    * - ``inputs.seurat_rds``
      - The Seurat ``.rds`` file to annotate.
      - ``/data/pdac/pdac_sn.rds``
-   * - ``llm.annotation.api_key``
-     - OpenAI API key reference. Set ``OPENAI_API_KEY`` in the environment; do not paste the real key into the YAML file.
-     - ``${OPENAI_API_KEY}``
    * - ``annotation.species``
      - The species used for ontology and marker evidence lookup.
      - ``human`` or ``mouse``

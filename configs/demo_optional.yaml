@@ -17,7 +17,6 @@ policy:
 llm:
   annotation:
     model: gpt-5  # Main annotation/review model. Changing this can change labels and cost.
-    api_key: ${OPENAI_API_KEY}  # Your OpenAI key from the environment. Do not paste it here.
   pdfmarkers:
     model: gpt-5-nano  # Model used only when pdf_dir contains PDFs.
 
