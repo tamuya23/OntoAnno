@@ -15,6 +15,7 @@ from .llm_compare import build_llm_compare
 from .ontology_relations import build_ontology_relations
 from .review_packets import build_review_packets
 from .reporting import generate_report
+from .results_export import sync_project_results
 from .utils import STAGES, dump_json, ensure_dir, load_json, path_uri, slugify, stage_slice, utc_now
 
 
@@ -185,6 +186,21 @@ class Orchestrator:
         self.manifest["outputs"][stage] = outputs
         self._save_state()
         self._save_manifest()
+        if stage in {"annotate_parent", "annotate_subclusters", "report"}:
+            self._sync_project_results()
+
+    def _sync_project_results(self) -> dict[str, Any]:
+        try:
+            outputs = sync_project_results(
+                config=self.config,
+                run_dir=self.run_dir,
+                manifest=self.manifest,
+            )
+        except Exception as exc:  # noqa: BLE001
+            outputs = {"error": str(exc)}
+        self.manifest.setdefault("outputs", {})["project_results"] = outputs
+        self._save_manifest()
+        return outputs
 
     def _remove_recorded_outputs(self, stages: tuple[str, ...], paths: tuple[Path, ...] = ()) -> None:
         for path in paths:
@@ -995,6 +1011,14 @@ class Orchestrator:
             cached_outputs = gptanno_outputs[tool]
             if isinstance(cached_outputs, dict) and self._outputs_artifacts_exist(cached_outputs):
                 self._emit(f"GPTAnno tool '{tool}' already completed; reusing recorded outputs.")
+                if tool in {
+                    "annotate_parent_raw",
+                    "map_parent_ontology",
+                    "select_parent_resolution",
+                    "assign_parent_labels",
+                    "finalize_subcluster_annotations",
+                }:
+                    self._sync_project_results()
                 return cached_outputs
             self._emit(f"GPTAnno tool '{tool}' recorded outputs are stale; rerunning.")
         if force:
@@ -1019,6 +1043,14 @@ class Orchestrator:
                 self.clear_after_subcluster_annotation_outputs()
             elif tool == "finalize_subcluster_annotations":
                 self.clear_report_outputs()
+        if tool in {
+            "annotate_parent_raw",
+            "map_parent_ontology",
+            "select_parent_resolution",
+            "assign_parent_labels",
+            "finalize_subcluster_annotations",
+        }:
+            self._sync_project_results()
         return outputs
 
 

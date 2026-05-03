@@ -51,12 +51,12 @@ Docker Setup
 
 Use Docker if you are on your own computer or a regular server.
 
-1. Prepare folders and set API key:
+1. Prepare folders and set your API key in the terminal:
 
    .. code-block:: bash
 
       bash scripts/docker_setup.sh
-      OPENAI_API_KEY=your_api_key_here
+      export OPENAI_API_KEY=your_api_key_here
 
 2. Put your data files in ``data/``. Then configure ``configs/demo.yaml``
    using :doc:`data_configure`.
@@ -73,13 +73,12 @@ Apptainer Setup
 
 Use Apptainer on HPC systems such as Longleaf.
 
-1. Prepare folders and set API key:
+1. Prepare folders and set your API key in the terminal:
 
    .. code-block:: bash
 
       bash scripts/apptainer_setup.sh
-      OPENAI_API_KEY=your_api_key_here
-      ONTOANNO_IMAGE=docker://ghcr.io/tamuya23/ontoanno:latest
+      export OPENAI_API_KEY=your_api_key_here
 
 2. Put your data files in ``data/``. Then configure ``configs/demo.yaml``
    using :doc:`data_configure`.

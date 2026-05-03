@@ -23,7 +23,7 @@ Use Docker on a laptop, workstation, or regular Linux server:
 
 ```bash
 bash scripts/docker_setup.sh
-# edit .env and set OPENAI_API_KEY
+export OPENAI_API_KEY=your_api_key_here
 # put your Seurat .rds file under data/
 # edit configs/demo.yaml for your dataset
 ./scripts/start_ontoanno_docker.sh configs/demo.yaml
@@ -33,7 +33,7 @@ Use Apptainer on HPC systems where Docker is not available:
 
 ```bash
 bash scripts/apptainer_setup.sh
-# edit .env and set OPENAI_API_KEY
+export OPENAI_API_KEY=your_api_key_here
 # put your Seurat .rds file under data/
 # edit configs/demo.yaml for your dataset
 ./scripts/start_ontoanno_apptainer.sh configs/demo.yaml
@@ -91,16 +91,6 @@ The main user documentation is in `docs/`:
 - [Quick Start](docs/quick_start.rst)
 - [Data Configure](docs/data_configure.rst)
 - [Agent Guide](docs/agent_guide.rst)
-- [Example Run](docs/example_run.rst)
-
-To build the HTML documentation locally:
-
-```bash
-python3 -m pip install -r docs/requirements.txt
-python3 -m sphinx -E -b html docs docs/_build/html
-```
-
-Open `docs/_build/html/index.html` after the build finishes.
 
 ## Acknowledgement
 

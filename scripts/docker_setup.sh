@@ -20,9 +20,9 @@ else
 fi
 
 printf '\nNext step:\n'
-printf '1. Edit %s\n' "${ENV_FILE}"
-printf '   - OPENAI_API_KEY: your OpenAI API key\n'
-printf '   - ONTOANNO_CONFIG is optional; you can pass the config when launching.\n'
-printf '     Example: ./scripts/start_ontoanno_docker.sh configs/my_project.yaml\n'
+printf '1. Set your OpenAI API key in this terminal:\n'
+printf '   export OPENAI_API_KEY=your_api_key_here\n'
+printf '   You can edit %s later for optional defaults such as ONTOANNO_CONFIG.\n' "${ENV_FILE}"
+printf '   Example: ./scripts/start_ontoanno_docker.sh configs/my_project.yaml\n'
 printf '2. Put your input data files under %s/data\n' "${ROOT_DIR}"
 printf '3. Start OntoAnno with: ./scripts/start_ontoanno_docker.sh\n'

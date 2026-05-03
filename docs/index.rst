@@ -52,4 +52,3 @@ For most users, follow these three steps in order:
    quick_start
    data_configure
    agent_guide
-   example_run

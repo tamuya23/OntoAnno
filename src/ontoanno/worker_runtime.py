@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .results_export import sync_project_results
 from .review_packets import has_imported_parent_annotation_inputs
 from .utils import load_json
 
@@ -150,6 +151,17 @@ def _worker_result(
     if notes:
         result["notes"] = list(notes)
     return result
+
+
+def _sync_project_results(orchestrator: Any) -> dict[str, Any]:
+    try:
+        return sync_project_results(
+            config=orchestrator.config,
+            run_dir=orchestrator.run_dir,
+            manifest=orchestrator.manifest,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
 
 
 def _blocked_worker_result(worker: str, readiness: dict[str, Any]) -> dict[str, Any]:
@@ -581,6 +593,7 @@ def run_gptanno_worker_chain(
         _clear_parent_dependent_outputs(orchestrator)
     elif force and any(worker in SUBCLUSTER_WORKERS for worker in workers):
         _clear_report_outputs(orchestrator)
+    _sync_project_results(orchestrator)
     return executed
 
 
@@ -805,6 +818,7 @@ def run_rag_check_workers(
         run_dir=orchestrator.run_dir,
     )
     executed.append(human_review_worker)
+    _sync_project_results(orchestrator)
     return executed, ask_user_count
 
 
@@ -878,6 +892,9 @@ def run_export_reviewed_parent_worker(orchestrator: Any) -> tuple[dict[str, Any]
             if callable(save_manifest):
                 save_manifest()
             _clear_report_outputs(orchestrator)
+            outputs["project_results"] = _sync_project_results(orchestrator)
+            if callable(save_manifest):
+                save_manifest()
             return outputs, _worker_result(
                 worker="export_reviewed_parent_annotations",
                 implementation="interactive_cli.export_reviewed_parent_annotations",
@@ -911,6 +928,9 @@ def run_export_reviewed_parent_worker(orchestrator: Any) -> tuple[dict[str, Any]
     if callable(save_manifest):
         save_manifest()
     _clear_report_outputs(orchestrator)
+    outputs["project_results"] = _sync_project_results(orchestrator)
+    if callable(save_manifest):
+        save_manifest()
     return outputs, _worker_result(
         worker="export_reviewed_parent_annotations",
         implementation="interactive_cli.export_reviewed_parent_annotations",
@@ -939,6 +959,11 @@ def run_generate_report_worker(orchestrator: Any, *, force: bool = True) -> tupl
     run_dir = orchestrator.run(from_stage="report", to_stage="report", force=force)
     outputs = orchestrator.manifest.get("outputs", {}).get("report", {})
     outputs = {"run_dir": str(run_dir), **(outputs if isinstance(outputs, dict) else {})}
+    outputs["project_results"] = _sync_project_results(orchestrator)
+    orchestrator.manifest.setdefault("outputs", {})["report"] = outputs
+    save_manifest = getattr(orchestrator, "_save_manifest", None)
+    if callable(save_manifest):
+        save_manifest()
     return outputs, _worker_result(
         worker="generate_report",
         implementation="orchestrator.run(report)",

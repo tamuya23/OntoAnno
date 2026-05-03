@@ -267,3 +267,65 @@ Check results in:
 
 * ``Artifacts`` for the report preview.
 * ``work/<project>/`` and ``runs/<run_id>/`` for saved output files.
+
+Important Outputs
+-----------------
+
+OntoAnno keeps internal workflow files in both ``work/<project>/`` and
+``runs/<run_id>/``. To make the final outputs easier to find, important
+user-facing files are also collected under:
+
+.. code-block:: text
+
+   work/<project>/results/
+
+Large Seurat objects may appear there as symbolic links so that OntoAnno does
+not duplicate large files. Open ``result_index.csv`` in that folder to see the
+source path for every collected result.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 32 40
+
+   * - File in ``work/<project>/results/``
+     - What it contains
+     - When it appears
+   * - ``result_index.csv``
+     - Index of collected results, source paths, copy/link method, and descriptions.
+     - Whenever result files are synchronized.
+   * - ``parent_best_resolution.json``
+     - Selected parent resolution and cluster column.
+     - After parent annotation.
+   * - ``parent_resolution_scores.csv``
+     - Scores used to compare parent resolutions.
+     - After parent annotation.
+   * - ``parent_annotated_seurat.rds``
+     - Seurat object with parent labels.
+     - After parent annotation.
+   * - ``reviewed_parent_metadata.csv``
+     - Per-cell metadata with reviewed parent labels.
+     - After RAG review is exported.
+   * - ``reviewed_cluster_decisions.csv``
+     - Cluster-level final labels and decision sources.
+     - After RAG review is exported.
+   * - ``reviewed_parent_seurat.rds``
+     - Seurat object with reviewed parent labels.
+     - After RAG review is exported.
+   * - ``subcluster_metadata.csv``
+     - Per-cell metadata with final subcluster labels.
+     - After subcluster annotation.
+   * - ``subcluster_final_seurat.rds``
+     - Seurat object with final subcluster labels.
+     - After subcluster annotation.
+   * - ``rag_controller_summary.csv``
+     - RAG check outcome for each cluster.
+     - After RAG check.
+   * - ``rag_llm_compare_summary.csv``
+     - LLM judge decisions and short reasons.
+     - After RAG check when LLM comparison was needed.
+   * - ``external_evidence_memory.json``
+     - Stored user-provided and literature-provided marker evidence.
+     - After external evidence is added.
+   * - ``final_report.html`` or ``final_report.pdf``
+     - Final OntoAnno report.
+     - After report generation.
