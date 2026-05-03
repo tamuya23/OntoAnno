@@ -650,7 +650,7 @@ def _render_preview_table(title: str, path_str: str, *, limit: int = 12) -> None
         st.info(f"No preview available for {title.lower()}.")
         return
     st.markdown(f"**{title}**")
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
 
 def _render_pdf_embed(path: Path, *, height: int = 720) -> None:
@@ -869,7 +869,7 @@ def _render_marker_overlap_venn(cluster_genes: list[str], cellmarker_genes: list
     }
     st.dataframe(
         [{"overlap": key, "genes": ", ".join(value) or "-"} for key, value in overlaps.items()],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -1195,7 +1195,7 @@ def _render_parent_annotation_tab(orchestrator: Orchestrator) -> None:
         st.metric("Selected", selected_resolution)
 
     st.markdown("**Resolution scores**")
-    st.dataframe(score_rows, use_container_width=True, hide_index=True)
+    st.dataframe(score_rows, width="stretch", hide_index=True)
 
     mapping_rows = _read_csv_rows(mapping_csv) if Path(mapping_csv).exists() else []
     filtered_mapping = [row for row in mapping_rows if str(row.get("resolution") or "").strip() == selected_resolution]
@@ -1212,7 +1212,7 @@ def _render_parent_annotation_tab(orchestrator: Orchestrator) -> None:
             ]
     if cluster_rows:
         st.markdown("**Cluster annotation results**")
-        st.dataframe(cluster_rows[:100], use_container_width=True, hide_index=True)
+        st.dataframe(cluster_rows[:100], width="stretch", hide_index=True)
     else:
         st.info("No standardized cluster annotation table is available yet. Run build_review_packets to generate a lightweight table from imported annotations.")
 
@@ -1369,7 +1369,7 @@ def _render_subcluster_tab(orchestrator: Orchestrator) -> None:
             for row in cluster_rows
         ]
         st.markdown("**Cluster annotation results**")
-        st.dataframe(cluster_table[:100], use_container_width=True, hide_index=True)
+        st.dataframe(cluster_table[:100], width="stretch", hide_index=True)
     elif preview_error:
         st.info(preview_error)
     else:
@@ -1455,7 +1455,7 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
 
     st.markdown("**RAG review overview**")
     if overview_rows:
-        st.dataframe(overview_rows, use_container_width=True, hide_index=True)
+        st.dataframe(overview_rows, width="stretch", hide_index=True)
     elif controller_summary:
         fallback_rows = _read_csv_rows(controller_summary)
         slim_rows = [
@@ -1467,7 +1467,7 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
             }
             for row in fallback_rows
         ]
-        st.dataframe(slim_rows, use_container_width=True, hide_index=True)
+        st.dataframe(slim_rows, width="stretch", hide_index=True)
     else:
         st.info("Controller summary is not available yet.")
 
@@ -1589,7 +1589,7 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
         st.write("Calculated marker genes: " + (", ".join(cluster_genes[:30]) if cluster_genes else "not available"))
         ref_rows = _reference_marker_rows(relation)
         if ref_rows:
-            st.dataframe(ref_rows, use_container_width=True, hide_index=True)
+            st.dataframe(ref_rows, width="stretch", hide_index=True)
             candidates = _split_pipe_values(state.get("focus_candidates"))
             if not candidates:
                 candidates = sorted({str(row.get("candidate") or "") for row in ref_rows if str(row.get("candidate") or "").strip()})
@@ -1791,7 +1791,7 @@ def _render_external_evidence_tab(config: dict[str, Any]) -> None:
                             }
                             for item in result["evidence"]
                         ],
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
             except ExternalEvidenceError as exc:
@@ -1855,13 +1855,13 @@ def _render_external_evidence_tab(config: dict[str, Any]) -> None:
 
     st.markdown("**User-provided evidence**")
     if user_rows:
-        st.dataframe(user_rows, use_container_width=True, hide_index=True)
+        st.dataframe(user_rows, width="stretch", hide_index=True)
     else:
         st.info("No user-provided evidence stored yet.")
 
     st.markdown("**Literature-provided evidence**")
     if literature_rows:
-        st.dataframe(literature_rows, use_container_width=True, hide_index=True)
+        st.dataframe(literature_rows, width="stretch", hide_index=True)
     else:
         st.info("No literature-provided evidence yet.")
 
@@ -2148,7 +2148,7 @@ def main() -> None:
         st.write(f"Custom marker entries: `{state['memory_markers']}`")
         st.write(f"Custom celltype entries: `{state['memory_celltypes']}`")
         st.write(f"Session: `{state['session_path']}`")
-        if st.button("Reset agent session", use_container_width=True):
+        if st.button("Reset agent session", width="stretch"):
             reset_agent_session(config)
             st.session_state["ui_chat_history"] = []
             _save_ui_history(config, [])
@@ -2156,7 +2156,7 @@ def main() -> None:
         if st.button(
             "Reload saved session",
             help="Reload the saved chat/session files from disk if the page looks stale.",
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state["ui_chat_history"] = _load_ui_history(config)
             _rerun_app()
@@ -2207,7 +2207,7 @@ def main() -> None:
             readiness = worker_prerequisite_status(orchestrator, worker)
             _render_worker_readiness(readiness)
             force = st.checkbox("Force", value=False)
-            if st.button("Run worker", use_container_width=True, disabled=not bool(readiness.get("ok"))):
+            if st.button("Run worker", width="stretch", disabled=not bool(readiness.get("ok"))):
                 with st.spinner(f"Running worker: {worker}"):
                     _run_worker(config, orchestrator, worker, force=force, phase=phase)
                 _rerun_app()
