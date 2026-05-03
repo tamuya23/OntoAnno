@@ -139,6 +139,39 @@ Check results in:
 Subclustering is optional. You can skip it and continue directly to RAG review
 or report generation.
 
+External Evidence
+-----------------
+
+External evidence is project memory that OntoAnno can use later when reviewing
+parent or subcluster annotations. You can add it before or after annotation; if
+you add it early, OntoAnno stores it and applies it when the RAG review and LLM
+judge steps run.
+
+To add marker evidence manually, say the cell type and markers explicitly:
+
+.. code-block:: text
+
+   Add these markers to pericyte: RGS5, CSPG4, MCAM
+
+User-provided marker evidence is treated as high-priority evidence during
+review. It can support or challenge parent and subcluster labels during RAG
+review, but it does not change clustering, marker-gene detection, or the initial
+GPTAnno parent annotation directly. Only add it when the cell type and marker
+relationship is explicit.
+
+You can also add literature-derived evidence from a PDF. Open ``External
+Evidence`` and use the PDF extraction panel:
+
+1. Upload a literature PDF.
+2. Choose the page range for figure extraction.
+3. Keep the default render DPI unless the figure text is too small.
+4. Click ``Extract PDF evidence``.
+
+OntoAnno extracts text evidence with the GPTAnno/PDF2markers text pipeline and
+extracts figure evidence with a vision LLM. The resulting celltype-marker pairs
+appear under literature-provided evidence. These PDF-derived entries are
+supportive evidence for review, not golden rules.
+
 RAG_Check
 ---------
 
@@ -147,44 +180,17 @@ reference marker evidence, user-provided evidence, literature-provided
 evidence, and LLM comparison.
 
 Granularity belongs to this review stage. It controls how specific the reviewed
-label wording should be after clusters and marker genes are already fixed. Use
-it when the cluster structure is acceptable but the label names are too broad or
-too specific.
+label candidates should be after clusters and marker genes are already fixed.
+It changes which ontology candidates are compared by the LLM judge; it does not
+force the LLM to choose a more specific or more general label. Accuracy remains
+the first priority, so the LLM can keep the current label or send the cluster to
+human review if the markers do not support the requested specificity.
 
 .. code-block:: text
 
    The reviewed labels are too coarse. Make them more specific.
 
 Run it after parent annotation or after subclustering:
-
-.. code-block:: text
-
-   Run the RAG check
-
-If you want to provide marker evidence before review, say the cell type and
-markers explicitly:
-
-.. code-block:: text
-
-   Add these markers to pericyte: RGS5, CSPG4, MCAM
-
-User-provided marker evidence is treated as high-priority evidence during
-review. Only add it when the cell type and marker relationship is explicit.
-
-You can also add literature-derived evidence from a PDF before running RAG
-review. Open ``External Evidence`` and use the PDF extraction panel:
-
-1. Upload a literature PDF.
-2. Choose the page range for figure extraction.
-3. Keep the default render DPI unless the figure text is too small.
-4. Click ``Extract PDF evidence``.
-
-OntoAnno extracts text evidence with the GPTAnno/PDF2markers text pipeline and
-extracts figure evidence with a vision LLM. The resulting celltype-marker
-pairs appear under literature-provided evidence. These PDF-derived entries are
-supportive evidence for RAG review, not golden rules.
-
-Then run:
 
 .. code-block:: text
 
@@ -234,7 +240,8 @@ and enable optional evaluation.
 Report
 ------
 
-The report module creates the final report after annotation and review.
+The report module creates the final report after annotation and review. The
+default output is HTML. A PDF report is also available when requested.
 
 Typical chat request:
 
@@ -242,7 +249,7 @@ Typical chat request:
 
    Generate the final report
 
-To choose a format, say it directly:
+To choose a specific format, say it directly:
 
 .. code-block:: text
 

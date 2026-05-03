@@ -763,22 +763,35 @@ def _rag_overview_rows(states: list[dict[str, Any]]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for state in states:
         next_action = str(state.get("next_action") or "").strip()
+        phase = str(state.get("phase") or "").strip()
+        history = state.get("action_history", [])
+        checked = phase in {"post_ontology", "post_compare"} or bool(state.get("relation_json")) or bool(state.get("result_json"))
+        if isinstance(history, list):
+            checked = checked or any(
+                isinstance(item, dict) and str(item.get("phase") or "") in {"post_ontology", "post_compare"}
+                for item in history
+            )
         candidates = _split_pipe_values(state.get("focus_candidates"))
         if not candidates:
             current = str(state.get("current_label") or state.get("label") or "").strip()
             candidates = [current] if current else []
         if next_action in {"build_ontology_relations", "run_llm_compare"}:
-            needs_check = "Yes"
+            next_step = "Continue RAG check"
         elif next_action == "ask_user":
-            needs_check = "Human review"
+            next_step = "Human review"
+        elif next_action == "finalize_llm_choice":
+            next_step = "Use RAG choice"
+        elif next_action == "finalize_keep_current":
+            next_step = "Keep current label"
         else:
-            needs_check = "No"
+            next_step = next_action or "No action"
         rows.append(
             {
                 "cluster": str(state.get("cluster_id") or ""),
                 "current_label": str(state.get("current_label") or state.get("label") or ""),
                 "potential_celltypes": " | ".join(candidates),
-                "needs_further_RAG_check": needs_check,
+                "RAG_checked": "Yes" if checked else "No",
+                "next_step": next_step,
             }
         )
     return rows
@@ -1463,7 +1476,8 @@ def _render_rag_review_tab(orchestrator: Orchestrator) -> None:
                 "cluster": str(row.get("cluster_id") or ""),
                 "current_label": str(row.get("current_label") or ""),
                 "potential_celltypes": str(row.get("focus_candidates") or ""),
-                "needs_further_RAG_check": "Human review" if str(row.get("next_action") or "") == "ask_user" else ("Yes" if str(row.get("next_action") or "") in {"build_ontology_relations", "run_llm_compare"} else "No"),
+                "RAG_checked": "Yes" if str(row.get("phase") or "") in {"post_ontology", "post_compare"} else "No",
+                "next_step": "Human review" if str(row.get("next_action") or "") == "ask_user" else ("Continue RAG check" if str(row.get("next_action") or "") in {"build_ontology_relations", "run_llm_compare"} else str(row.get("next_action") or "No action")),
             }
             for row in fallback_rows
         ]
