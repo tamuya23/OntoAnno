@@ -1916,13 +1916,6 @@ def _render_chat_history_panel(messages: list[dict[str, Any]]) -> None:
         item for item in messages
         if str(item.get("content") or "").strip()
     ]
-    if clean_messages:
-        latest = clean_messages[-1]
-        latest_role = str(latest.get("role") or "assistant").strip().lower()
-        st.markdown("**Latest activity**")
-        with st.chat_message("user" if latest_role == "user" else "assistant"):
-            st.markdown(str(latest.get("content") or "").strip())
-
     try:
         container = st.container(height=700, border=True)
     except TypeError:
