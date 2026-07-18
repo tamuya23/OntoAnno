@@ -9,6 +9,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
+
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
 try:
     from pypdf import PdfReader  # preferred
 except Exception:  # pragma: no cover
@@ -127,7 +130,9 @@ def get_model_params() -> Tuple[str, str, str]:
         or os.getenv("GPT_API_PASSWORD")
         or ""
     )
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    base_url = (os.getenv("OPENAI_BASE_URL") or DEFAULT_OPENAI_BASE_URL).strip()
+    if not base_url.startswith(("http://", "https://")):
+        raise ValueError("OPENAI_BASE_URL must start with http:// or https://")
     return api_user, api_password, base_url
 
 
