@@ -26,6 +26,7 @@ from .worker_runtime import (
     run_gptanno_worker_chain,
     run_decide_rag_check_worker,
     run_human_review_worker,
+    run_inspect_dataset_worker,
     run_rag_check_workers,
     worker_prerequisite_status,
 )
@@ -627,6 +628,31 @@ def apply_agent_request(config: dict[str, Any], intent: dict[str, Any], orchestr
         "message": "",
         "next_step": "",
     }
+
+    if intent_type == "inspect_dataset":
+        if orchestrator is None:
+            result["message"] = "inspect_dataset requires an active orchestrator."
+            return result
+        outputs, worker_result = run_inspect_dataset_worker(orchestrator)
+        summary = outputs["summary"]
+        parent_resolutions = ", ".join(str(item) for item in summary["parent_resolutions"]) or "not configured"
+        subcluster_resolutions = ", ".join(str(item) for item in summary["subcluster_resolutions"]) or "not configured"
+        input_status = "available" if summary["seurat_rds_exists"] else "not found"
+        result.update(
+            {
+                "message": (
+                    f"Dataset '{summary['project_name']}' is configured as species '{summary['species']}' "
+                    f"with tissue context '{summary['tissue_name']}'. "
+                    f"The Seurat input is '{summary['seurat_rds'] or 'not configured'}' ({input_status}). "
+                    f"Preprocessing is {'enabled' if summary['preprocess'] else 'disabled'}, "
+                    f"with parent resolutions [{parent_resolutions}] and "
+                    f"subcluster resolutions [{subcluster_resolutions}]."
+                ),
+                "executed_workers": [worker_result],
+                "dataset_summary": summary,
+            }
+        )
+        return result
 
     if intent_type == "configure_reference_labels":
         reference_labels_csv = str(intent.get("reference_labels_csv") or "").strip()

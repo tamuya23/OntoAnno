@@ -6,6 +6,22 @@ architecture:
   worker_role: "Execute one concrete step without making high-level routing decisions."
 
 top_level_intents:
+  inspect_dataset:
+    user_facing: true
+    description: "Return basic configured dataset information without running analysis."
+    controller_action: "inspect_dataset"
+    parameters:
+      reason:
+        type: string
+        required: true
+    current_execution:
+      mode: single_read_only_worker
+      workers:
+        - inspect_dataset
+    outputs:
+      - "structured config summary for species, tissue, input path, preprocessing, and resolutions"
+    status: "connected"
+
   run_parent_pipeline:
     user_facing: true
     description: "Run the full parent backbone from preprocessing through assigned parent labels."

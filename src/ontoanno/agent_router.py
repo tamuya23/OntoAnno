@@ -38,6 +38,7 @@ def _router_system_prompt() -> str:
         "Use tools only when the user is asking to change project state, run analysis, or execute a workflow step. "
         "Do not overuse tools for read-only questions. "
         "If the user is primarily asking to inspect, explain, summarize, compare, or show current state, answer directly unless a dedicated tool is truly required. "
+        "Use inspect_dataset when the user asks for basic dataset information, dataset metadata, species, tissue, input data path, preprocessing settings, or configured clustering resolutions. "
         "Prefer a single high-value action unless multiple actions are clearly necessary. "
         "When the request is about parent pipeline reruns, subcluster reruns, RAG-based review/checks, "
         "annotation preference changes such as granularity or resolution, researcher-provided external evidence, "
@@ -68,6 +69,7 @@ def _tool_gate_prompt() -> str:
         "Requests to run, resume, continue, restart, or rerun the parent annotation pipeline require a tool call. "
         "Requests to look deeper into a specific cell type, drill down into a cell type, or subcluster a cell type do require a tool call. "
         "Requests to save human-review decisions, configure reference labels, export reviewed annotations, or generate HTML/PDF reports require a tool call. "
+        "Requests for basic dataset information, configured species or tissue, input dataset path, preprocessing settings, or configured resolutions require the inspect_dataset tool. "
         "If the request is read-only and can be answered from the provided context, answer it directly and do not request a tool. "
         "If a tool is required, reply with exactly: TOOL_REQUIRED"
     )
@@ -83,6 +85,21 @@ def _followup_suggestion_prompt() -> str:
 
 def _tool_schemas() -> list[dict[str, Any]]:
     return [
+        {
+            "type": "function",
+            "function": {
+                "name": "inspect_dataset",
+                "description": "Read configured basic dataset information such as species, tissue, input Seurat path, preprocessing mode, and clustering resolutions without running analysis.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["reason"],
+                    "additionalProperties": False,
+                },
+            },
+        },
         {
             "type": "function",
             "function": {
@@ -546,6 +563,11 @@ def _intent_from_tool(
     user_request: str,
     session: dict[str, Any],
 ) -> dict[str, Any]:
+    if tool_name == "inspect_dataset":
+        return {
+            "intent_type": "inspect_dataset",
+            "raw_text": user_request,
+        }
     if tool_name == "run_parent_pipeline":
         return {
             "intent_type": "run_parent_pipeline",

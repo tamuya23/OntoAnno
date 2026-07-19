@@ -53,6 +53,13 @@ def _default_reset_session() -> bool:
 
 
 WORKER_GUIDE: dict[str, dict[str, Any]] = {
+    "inspect_dataset": {
+        "category": "Dataset",
+        "purpose": "Read basic configured dataset metadata without running analysis.",
+        "inputs": "Project config fields for species, tissue, Seurat input, preprocessing, and clustering resolutions.",
+        "outputs": "A read-only structured dataset summary returned to the Agent or manual worker console.",
+        "manual_use": "Use when checking that the loaded config describes the intended dataset.",
+    },
     "preprocess_parent": {
         "category": "Parent annotation",
         "purpose": "Prepare the input Seurat object for parent-level clustering and marker detection.",
@@ -1669,7 +1676,16 @@ def _render_report_tab(orchestrator: Orchestrator) -> None:
 
     if report_html_path and report_html_path.exists() and report_html_path.is_file():
         st.markdown("**Report preview**")
-        components.html(report_html_path.read_text(encoding="utf-8", errors="replace"), height=900, scrolling=True)
+        report_html_content = report_html_path.read_text(encoding="utf-8", errors="replace")
+        iframe = getattr(st, "iframe", None)
+        if callable(iframe):
+            report_data_uri = "data:text/html;base64," + base64.b64encode(
+                report_html_content.encode("utf-8")
+            ).decode("ascii")
+            iframe(report_data_uri, height=900, scrolling=True)
+        else:
+            # Compatibility fallback for Streamlit versions predating st.iframe.
+            components.html(report_html_content, height=900, scrolling=True)
     elif report_pdf_path and report_pdf_path.exists() and report_pdf_path.is_file():
         st.markdown("**Report preview**")
         _render_pdf_embed(report_pdf_path, height=900)

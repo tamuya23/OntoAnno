@@ -39,7 +39,12 @@ OUTPUT_WORKERS = [
     "generate_report",
 ]
 
+INSPECTION_WORKERS = [
+    "inspect_dataset",
+]
+
 AVAILABLE_WORKERS = [
+    *INSPECTION_WORKERS,
     *PARENT_BACKBONE_WORKERS,
     *SUBCLUSTER_WORKERS,
     *RAG_WORKERS,
@@ -175,6 +180,37 @@ def _blocked_worker_result(worker: str, readiness: dict[str, Any]) -> dict[str, 
         status="blocked",
         outputs={"missing_prerequisites": missing},
         notes=notes or ["This worker is blocked by missing prerequisites."],
+    )
+
+
+def run_inspect_dataset_worker(orchestrator: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    config = orchestrator.config
+    project = config.get("project", {}) if isinstance(config.get("project"), dict) else {}
+    inputs = config.get("inputs", {}) if isinstance(config.get("inputs"), dict) else {}
+    annotation = config.get("annotation", {}) if isinstance(config.get("annotation"), dict) else {}
+
+    seurat_rds = str(inputs.get("seurat_rds") or "").strip()
+    seurat_path = Path(seurat_rds) if seurat_rds else None
+    summary = {
+        "project_name": str(project.get("name") or ""),
+        "species": str(annotation.get("species") or "not configured"),
+        "tissue_name": str(annotation.get("tissue_name") or "not configured"),
+        "seurat_rds": seurat_rds or None,
+        "seurat_rds_exists": bool(seurat_path and seurat_path.is_file()),
+        "preprocess": bool(annotation.get("preprocess", True)),
+        "parent_resolutions": list(annotation.get("parent_res") or []),
+        "subcluster_resolutions": list(annotation.get("sub_res") or []),
+        "minimum_subcluster_cell_count": annotation.get("min_cell_count"),
+        "reference_labels_csv": inputs.get("reference_labels_csv") or inputs.get("manual_labels_csv"),
+        "work_dir": str(project.get("work_dir") or ""),
+        "run_id": str(getattr(orchestrator, "run_id", "") or ""),
+    }
+    outputs = {"summary": summary}
+    return outputs, _worker_result(
+        worker="inspect_dataset",
+        implementation="config_dataset_summary",
+        outputs=outputs,
+        notes=["Read-only inspection; no analysis workers were run and no project state was changed."],
     )
 
 
@@ -985,6 +1021,10 @@ def run_named_worker(
     readiness = worker_prerequisite_status(orchestrator, worker)
     if not readiness.get("ok"):
         return _blocked_worker_result(worker, readiness)
+
+    if worker == "inspect_dataset":
+        _, result = run_inspect_dataset_worker(orchestrator)
+        return result
 
     if worker in PARENT_BACKBONE_WORKERS:
         return run_gptanno_worker_chain(orchestrator, [worker], force=True if force else False)[0]

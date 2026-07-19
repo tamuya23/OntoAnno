@@ -55,6 +55,21 @@ The OntoAnno page has three main working areas.
      - Live output from the currently running worker.
      - Use this for progress monitoring and troubleshooting failed workers.
 
+Dataset Information
+-------------------
+
+Ask the Agent for basic configured dataset metadata without running analysis:
+
+.. code-block:: text
+
+   Give me some basic information about the dataset
+
+The read-only ``inspect_dataset`` worker reports the project name, species,
+tissue, Seurat input path and availability, preprocessing setting, parent and
+subcluster resolutions, minimum subcluster cell count, reference-label input,
+work directory, and active run ID. It reads the current config and does not
+load the full Seurat object or change project state.
+
 Cluster
 -------
 
