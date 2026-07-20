@@ -1682,7 +1682,7 @@ def _render_report_tab(orchestrator: Orchestrator) -> None:
             report_data_uri = "data:text/html;base64," + base64.b64encode(
                 report_html_content.encode("utf-8")
             ).decode("ascii")
-            iframe(report_data_uri, height=900, scrolling=True)
+            iframe(report_data_uri, height=900)
         else:
             # Compatibility fallback for Streamlit versions predating st.iframe.
             components.html(report_html_content, height=900, scrolling=True)
