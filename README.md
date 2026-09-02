@@ -15,8 +15,8 @@ background.
 Clone the repository:
 
 ```bash
-git clone https://github.com/tamuya23/OntoAnno.git
-cd OntoAnno
+git clone https://github.com/tamuya23/OntoAnno_Agent.git
+cd OntoAnno_Agent
 ```
 
 Use Docker on a laptop, workstation, or regular Linux server:

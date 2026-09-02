@@ -10,8 +10,8 @@ First, clone the OntoAnno repository:
 
 .. code-block:: bash
 
-   git clone https://github.com/tamuya23/OntoAnno.git
-   cd OntoAnno
+   git clone https://github.com/tamuya23/OntoAnno_Agent.git
+   cd OntoAnno_Agent
 
 Choose Installation Method
 --------------------------
