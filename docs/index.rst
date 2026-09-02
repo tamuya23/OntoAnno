@@ -1,5 +1,5 @@
-OntoAnno
-========
+OntoAnno_Agent
+==============
 
 Start here if you have a Seurat object and want to annotate cell types.
 

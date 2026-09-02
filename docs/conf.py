@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-project = "OntoAnno"
+project = "OntoAnno_Agent"
 author = "OntoAnno contributors"
 copyright = "2026, OntoAnno contributors"
 release = "0.1.0"
@@ -26,8 +26,8 @@ exclude_patterns = ["_build", "_includes", "Thumbs.db", ".DS_Store"]
 source_suffix = ".rst"
 master_doc = "index"
 
-html_title = "OntoAnno"
-html_short_title = "OntoAnno"
+html_title = "OntoAnno_Agent"
+html_short_title = "OntoAnno_Agent"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 html_favicon = None
@@ -44,7 +44,7 @@ if importlib.util.find_spec("pydata_sphinx_theme") is not None:
         "collapse_navigation": False,
         "navbar_align": "left",
         "logo": {
-            "text": "OntoAnno",
+            "text": "OntoAnno_Agent",
         },
         "secondary_sidebar_items": ["page-toc"],
     }
